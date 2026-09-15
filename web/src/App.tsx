@@ -53,8 +53,8 @@ function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
   return !cfg.peaks.some((sp) => inSpan(d, sp))
 }
 
-const pInp: import('react').CSSProperties = { width: 48, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
-const pNum: import('react').CSSProperties = { width: 56, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
+const pInp: import('react').CSSProperties = { width: 44, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
+const pNum: import('react').CSSProperties = { width: 50, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
 
 const t = (key: string, params?: Record<string, string | number>): string => {
   let s: string = OVERRIDES[key] ?? DICT_ZH[key] ?? key
@@ -406,7 +406,7 @@ export function App() {
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.waitSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型等待</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.outSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型生成</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.answers}</div><div style={{ fontSize: 10, opacity: 0.65 }}>回答数</div></div>
-        <div title="本会话按模型价格表估算（¥/百万token）· 点击设置峰谷价、查看今日花费" style={{ cursor: 'pointer' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}<span style={{ fontSize: 10, marginLeft: 4, padding: '1px 5px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span></div><div style={{ fontSize: 10, opacity: 0.65 }}>本会话估算</div></div>
+        <div title="本会话按模型价格表估算（¥/百万token）· 点击设置峰谷价、查看今日花费" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 3 }}><span style={{ fontSize: 10, padding: '1px 4px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span><span>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}</span></div></div>
       </div>
       {pricesOpen ? (
         <div className="lc-card" style={{ fontSize: 11 }}>
