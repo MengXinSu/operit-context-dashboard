@@ -53,6 +53,16 @@ function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
   return !cfg.peaks.some((sp) => inSpan(d, sp))
 }
 
+// ── 用户偏好持久化（localStorage，跟价格同一套机制）──
+const PREF_KEY = 'dsh-prefs-v1'
+function loadPrefs(): Record<string, unknown> {
+  try { const r = localStorage.getItem(PREF_KEY); if (r) return JSON.parse(r) } catch (e) {}
+  return {}
+}
+function savePref(key: string, value: string): void {
+  try { const p = loadPrefs(); p[key] = value; localStorage.setItem(PREF_KEY, JSON.stringify(p)) } catch (e) {}
+}
+
 const pInp: import('react').CSSProperties = { width: 44, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
 const pNum: import('react').CSSProperties = { width: 50, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
 
@@ -108,6 +118,7 @@ type DataState = {
   fileActivity?: any[]
   toolUsage?: any[]
   todayGroups?: TodaySessionGroup[]
+  imgAtt?: { count: number; tokens: number }
   error?: string
 }
 
@@ -179,8 +190,8 @@ export function App() {
   const [selected, setSelected] = useState<number | null>(null)
   const [hovered, setHovered] = useState<number | null>(null)
   const [hoverCat, setHoverCat] = useState<string | null>(null)
-  const [granularity, setGranularity] = useState<'step' | 'turn'>('step')
-  const [mode, setMode] = useState<'total' | 'delta'>('total')
+  const [granularity, setGranularity] = useState<'step' | 'turn'>(() => (loadPrefs().granularity === 'turn' ? 'turn' : 'step'))
+  const [mode, setMode] = useState<'total' | 'delta'>(() => (loadPrefs().mode === 'delta' ? 'delta' : 'total'))
   const [state, setState] = useState<DataState>({ phase: 'loading' })
   const [refreshN, setRefreshN] = useState(0)
   const [priceCfg, setPriceCfg] = useState<PriceConfig>(loadPriceConfig)
@@ -199,6 +210,7 @@ export function App() {
   }
   const offpeakNow = isOffpeakAt(priceCfg, new Date())
   const [browser, setBrowser] = useState<BrowserState>({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
+  const [hoverTiming, setHoverTiming] = useState<string | null>(null)
 
   useEffect(() => {
     if (dark) document.body.setAttribute('data-ds-dark-theme', '')
@@ -236,6 +248,7 @@ export function App() {
         historyCount: sum.historyCount, requests, messages: msgs || [],
         events: evs || [], fileActivity: fa || [], toolUsage: tu || [],
         todayGroups: (tm && tm.ok && tm.groups) ? tm.groups : [],
+        imgAtt: (sum as any).imgAttachments || undefined,
       })
     }
     load()
@@ -298,6 +311,7 @@ export function App() {
       waitSum,
       outSum,
       activeMs: firstT && lastT ? Math.max(0, lastT - firstT) : 0,
+      restMs: Math.max(0, (firstT && lastT ? Math.max(0, lastT - firstT) : 0) - waitSum - outSum),
       answers: msgs.length,
       cost,
       costKnown,
@@ -448,6 +462,39 @@ export function App() {
 
       <div className="lc-card">
         <div className="lc-card-title">
+          <span className="lc-card-title-text">耗时统计</span>
+          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>活跃时长构成</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <Donut
+            segments={[
+              { key: 'twait', color: '#f59e0b', value: stats.waitSum },
+              { key: 'tgen', color: '#3b82f6', value: stats.outSum },
+              { key: 'trest', color: '#94a3b8', value: stats.restMs },
+            ].filter((sg) => sg.value > 0)}
+            centerTop={fmtDur(stats.activeMs)}
+            centerSub="活跃时长"
+            hoverKey={hoverTiming}
+            onHoverKey={setHoverTiming}
+          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, minWidth: 150, flex: 1 }}>
+            {[
+              { key: 'twait', color: '#f59e0b', label: '模型等待', v: stats.waitSum },
+              { key: 'tgen', color: '#3b82f6', label: '模型生成', v: stats.outSum },
+              { key: 'trest', color: '#94a3b8', label: '工具与开销', v: stats.restMs },
+            ].map((row) => (
+              <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: hoverTiming && hoverTiming !== row.key ? 0.55 : 1 }} onMouseEnter={() => setHoverTiming(row.key)} onMouseLeave={() => setHoverTiming(null)}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: row.color, display: 'inline-block' }} />
+                <span style={{ opacity: 0.8 }}>{row.label}</span>
+                <b style={{ marginLeft: 'auto' }}>{fmtDur(row.v)}</b>
+                <span style={{ opacity: 0.5, width: 36, textAlign: 'right' }}>{stats.activeMs > 0 ? Math.round((row.v / stats.activeMs) * 100) : 0}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="lc-card">
+        <div className="lc-card-title">
           <span className="lc-card-title-text">{t('overview.title')}</span>
           <span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.7 }}>≈{fmtTok(totalTok)} / 1.0M · {Math.round(totalTok / 1e6 * 100)}%已用</span>
         </div>
@@ -459,6 +506,9 @@ export function App() {
           onHoverKey={setHoverCat}
         />
         <Legend parts={parts} hoverKey={hoverCat} onHoverKey={setHoverCat} />
+        {state.imgAtt && state.imgAtt.count > 0 ? (
+          <div style={{ fontSize: 10, opacity: 0.6, marginTop: 6, textAlign: 'center' }}>图片附件 {state.imgAtt.count} 张 ≈{state.imgAtt.tokens} tokens（按官方图片计费公式估算）</div>
+        ) : null}
       </div>
 
       <div className="lc-card">
@@ -540,11 +590,11 @@ export function App() {
         <div className="lc-card-title">
           <span className="lc-card-title-text">{t('trend.title')}</span>
           <span style={{ display: 'inline-flex', gap: 6, marginLeft: 'auto' }}>
-            <button className="lc-gran-btn" onClick={() => setGranularity(granularity === 'step' ? 'turn' : 'step')}>
-              {granularity === 'step' ? 'Step' : 'Turn'}
+            <button className="lc-gran-btn" onClick={() => { const n = granularity === 'step' ? 'turn' : 'step'; setGranularity(n); savePref('granularity', n) }}>
+              {granularity === 'step' ? '步骤' : '轮次'}
             </button>
-            <button className="lc-gran-btn" onClick={() => setMode(mode === 'total' ? 'delta' : 'total')}>
-              {mode === 'total' ? 'Total' : 'Delta'}
+            <button className="lc-gran-btn" onClick={() => { const n = mode === 'total' ? 'delta' : 'total'; setMode(n); savePref('mode', n) }}>
+              {mode === 'total' ? '全量' : '增量'}
             </button>
           </span>
         </div>
@@ -572,7 +622,7 @@ export function App() {
         {selectedInfo ? (
           <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 8, fontSize: 11.5, lineHeight: 1.9 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontWeight: 600 }}>Turn {selectedInfo.r.turn} · Step {selectedInfo.r.step}</span>
+              <span style={{ fontWeight: 600 }}>第 {selectedInfo.r.turn} 轮 · 第 {selectedInfo.r.step} 步</span>
               <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span>
               <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setSelected(null)}>✕</button>
             </div>
