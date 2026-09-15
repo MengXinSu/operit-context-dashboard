@@ -64,6 +64,131 @@ var UI_CTX = null;      // Screen(ctx) 时注入：ctx.callTool 工具通道
 var LAST_KEY = "";      // 最近一次解析的会话 key（切会话时清缓存）
 
 function estTok(chars) { return Math.ceil((chars || 0) / 2); }
+// ── 图片 token 估算（DeepSeek 官方「图片 Token 计算器」移植）──
+var IMG_PATCH = 14, IMG_DOWN = 3, IMG_MAX_TOKENS = 384, IMG_PAD = 4, IMG_MIN_PIXELS = 147456, IMG_MAX_RATIO = 8;
+function imgGridTokens(rows, cols) {
+  var n = rows * (cols + 1) + 2;
+  if (rows % 2 === 1) n += cols + 1;
+  n += (Math.ceil(rows / 2) * (cols + 1) % 2) * 2;
+  return n;
+}
+function imgSolveResize(height, width, budget) {
+  var ratio = height / width;
+  var gridW = Math.sqrt((budget - 2) / ratio + 0.25) - 0.5;
+  var gridH = gridW * ratio;
+  var unit = IMG_PATCH * IMG_DOWN;
+  var bestHeight, bestWidth;
+  if (gridW < 1) {
+    var rows0 = Math.floor((budget - 2) / 2);
+    if (rows0 % 2 === 1) rows0 -= 1;
+    bestWidth = unit; bestHeight = rows0 * unit;
+  } else if (gridH < 2) {
+    var cols0 = Math.floor((budget - 2) / 2) - 1;
+    bestHeight = 2 * unit; bestWidth = cols0 * unit;
+  } else {
+    var cols = Math.trunc(gridW);
+    var rows = Math.trunc(gridH);
+    if (rows % 2 === 1) rows -= 1;
+    var scale = Math.min(cols * unit / width, rows * unit / height);
+    bestWidth = Math.trunc(width * scale / IMG_PATCH) * IMG_PATCH;
+    bestHeight = Math.trunc(height * scale / IMG_PATCH) * IMG_PATCH;
+  }
+  var nH = Math.ceil(Math.floor(bestHeight / IMG_PATCH) / IMG_DOWN);
+  var nW = Math.ceil(Math.floor(bestWidth / IMG_PATCH) / IMG_DOWN);
+  return { nLlmH: nH, nLlmW: nW, bestHeight: bestHeight, bestWidth: bestWidth, numTokens: imgGridTokens(nH, nW) };
+}
+function imgSafeResize(height, width, paddedHeight, paddedWidth) {
+  var nH = Math.ceil(Math.floor(paddedHeight / IMG_PATCH) / IMG_DOWN);
+  var nW = Math.ceil(Math.floor(paddedWidth / IMG_PATCH) / IMG_DOWN);
+  var pad = IMG_PAD - 1;
+  var budget = IMG_MAX_TOKENS - pad;
+  var result = { nLlmH: nH, nLlmW: nW, bestHeight: paddedHeight, bestWidth: paddedWidth, numTokens: imgGridTokens(nH, nW) };
+  if (result.numTokens > budget) {
+    result = imgSolveResize(height, width, budget);
+    var nextBudget = budget;
+    while (result.numTokens > budget) {
+      nextBudget -= 1;
+      result = imgSolveResize(height, width, nextBudget);
+    }
+  }
+  result.numTokens += pad;
+  return result;
+}
+function imgCalcResizeInner(width, height) {
+  var w = width, h = height;
+  if (w > h * IMG_MAX_RATIO) w = h * IMG_MAX_RATIO;
+  var pixels = w * h;
+  if (pixels < IMG_MIN_PIXELS && pixels > 0) {
+    var scale = Math.sqrt(IMG_MIN_PIXELS / pixels);
+    w = Math.trunc(w * scale); h = Math.trunc(h * scale);
+  }
+  var paddedWidth = Math.ceil(w / IMG_PATCH) * IMG_PATCH;
+  var paddedHeight = Math.ceil(h / IMG_PATCH) * IMG_PATCH;
+  return imgSafeResize(h, w, paddedHeight, paddedWidth);
+}
+function estimateImageTokens(width, height) {
+  if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) return null;
+  try {
+    var result = imgCalcResizeInner(width, height);
+    for (var i = 1; i < 10; i++) {
+      var next = imgCalcResizeInner(result.bestWidth, result.bestHeight);
+      if (next.nLlmH === result.nLlmH && next.nLlmW === result.nLlmW && next.bestHeight === result.bestHeight && next.bestWidth === result.bestWidth && next.numTokens === result.numTokens) return result.numTokens;
+      result = next;
+    }
+    return null;
+  } catch (e0) { return null; }
+}
+var IMG_B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var IMG_B64_MAP = null;
+function imgBase64ToBytes(b64) {
+  if (!IMG_B64_MAP) {
+    IMG_B64_MAP = {};
+    for (var c = 0; c < 64; c++) IMG_B64_MAP[IMG_B64_CHARS.charAt(c)] = c;
+  }
+  var out = [];
+  var buf = 0, bits = 0;
+  for (var i = 0; i < b64.length; i++) {
+    var ch = b64.charAt(i);
+    if (ch === "=") break;
+    var v = IMG_B64_MAP[ch];
+    if (v === undefined) continue;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out.push((buf >> bits) & 0xFF); }
+  }
+  return out;
+}
+/** 读图片宽高（JPEG SOF / PNG IHDR）；文件不在或解析失败返回 null（含缓存） */
+var IMG_SIZE_CACHE = {};
+async function imageSizeOf(path) {
+  if (IMG_SIZE_CACHE[path] !== undefined) return IMG_SIZE_CACHE[path];
+  var result = null;
+  try {
+    var r = await Tools.Files.readBinary(path, "android");
+    var b64 = r && r.contentBase64 ? String(r.contentBase64).slice(0, 200000) : "";
+    if (b64) {
+      var bytes = imgBase64ToBytes(b64);
+      if (bytes.length > 24 && bytes[0] === 0x89 && bytes[1] === 0x50) {
+        var wP = ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0;
+        var hP = ((bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]) >>> 0;
+        result = { w: wP, h: hP };
+      } else {
+        var i2 = 2;
+        while (i2 + 9 < bytes.length) {
+          if (bytes[i2] !== 0xFF) { i2 += 1; continue; }
+          var m2 = bytes[i2 + 1];
+          if (m2 >= 0xC0 && m2 <= 0xC3) {
+            result = { w: (bytes[i2 + 7] << 8) + bytes[i2 + 8], h: (bytes[i2 + 5] << 8) + bytes[i2 + 6] };
+            break;
+          }
+          i2 += 2 + ((bytes[i2 + 2] << 8) + bytes[i2 + 3]);
+        }
+      }
+    }
+  } catch (e) { result = null; }
+  IMG_SIZE_CACHE[path] = result;
+  return result;
+}
 /** 会话的官方 usage 轮次（chatmsg 去重、按时间升序；每轮 inputDelta = 该轮真实输入总量的增量） */
 async function usageRounds(key) {
   var msgs = await readJsonl("chatmsg-", 3);
@@ -374,6 +499,29 @@ async function apiSummary(keyIn) {
   var systemRest = (charsByKind.SYSTEM || 0) - wb.chars - sk.chars - up.chars;
   var cardName = "";
   try { var md = payload.metadata || {}; if (md.activePrompt && md.activePrompt.name) cardName = String(md.activePrompt.name); } catch (eM) {}
+  // 图片附件：扫消息里的 image 附件标签，按官方公式估算 token（读不到尺寸按典型截图 350 估）
+  var imgCount = 0, imgTokens = 0;
+  try {
+    var attRe = /<attachment[^>]*type="image[^>]*>/g;
+    var idRe = /id="([^"]+)"/;
+    for (var hi = 0; hi < hist.length; hi++) {
+      var hContent = String((hist[hi] || {}).content || "");
+      if (hContent.indexOf("<attachment") < 0) continue;
+      var attMatches = hContent.match(attRe);
+      if (!attMatches) continue;
+      for (var mi = 0; mi < attMatches.length; mi++) {
+        imgCount++;
+        var idm = idRe.exec(attMatches[mi]);
+        var dim = idm ? await imageSizeOf(idm[1]) : null;
+        if (dim) {
+          var tk = estimateImageTokens(dim.w, dim.h);
+          imgTokens += tk !== null ? tk : 350;
+        } else {
+          imgTokens += 350;
+        }
+      }
+    }
+  } catch (eI) { /* 图片统计失败不影响主流程 */ }
   var current = {
     system: estTok(systemRest),
     tools: estTok(toolsChars),
@@ -385,11 +533,12 @@ async function apiSummary(keyIn) {
     assistant: estTok(charsByKind.ASSISTANT),
     tool: estTok((charsByKind.TOOL_CALL || 0) + (charsByKind.TOOL_RESULT || 0))
   };
-  current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
+  if (imgTokens > 0) current.img = imgTokens;
+  current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool + (current.img || 0);
   // 上限保护：估算总量超过 96 万（1M 安全线）时按比例压缩
   try {
     if (current.total > 960000) {
-      anchorTo(current, ["system", "tools", "user", "inject", "skill", "profile", "summary", "assistant", "tool"], 960000);
+      anchorTo(current, ["system", "tools", "user", "inject", "skill", "profile", "summary", "assistant", "tool", "img"], 960000);
       current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
     }
   } catch (eA) { /* 忽略 */ }
@@ -401,6 +550,7 @@ async function apiSummary(keyIn) {
     counts: counts,
     toolsCount: (payload.availableTools || []).length,
     worldbook: wb,
+    imgAttachments: { count: imgCount, tokens: imgTokens },
     historyCount: hist.length,
     totalChars: totalChars + toolsChars
   };
