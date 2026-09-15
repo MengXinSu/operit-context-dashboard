@@ -406,7 +406,7 @@ export function App() {
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.waitSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型等待</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.outSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型生成</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.answers}</div><div style={{ fontSize: 10, opacity: 0.65 }}>回答数</div></div>
-        <div title="本会话按模型价格表估算（¥/百万token）· 点击设置峰谷价、查看今日花费" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 3 }}><span style={{ fontSize: 10, padding: '1px 4px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span><span>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}</span></div></div>
+        <div title="本会话按模型价格表估算（¥/百万token）· 点击设置峰谷价、查看今日花费" style={{ cursor: 'pointer' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}><span style={{ fontSize: 10, padding: '1px 4px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span><span>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}</span></div><div style={{ fontSize: 10, opacity: 0.65 }}>仅本会话</div></div>
       </div>
       {pricesOpen ? (
         <div className="lc-card" style={{ fontSize: 11 }}>
