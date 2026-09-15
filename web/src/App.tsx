@@ -449,11 +449,11 @@ export function App() {
       <div className="lc-card">
         <div className="lc-card-title">
           <span className="lc-card-title-text">{t('overview.title')}</span>
-          <span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.7 }}>≈{fmtTok(totalTok)} tokens</span>
+          <span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.7 }}>≈{fmtTok(totalTok)} / 1.0M · {Math.round(totalTok / 1e6 * 100)}%已用</span>
         </div>
         <StackedBar
           parts={parts}
-          max={totalTok > 0 ? Math.ceil(totalTok * 1.3) : 1000000}
+          max={1000000}
           reserve={{ ratio: 0.8, label: t('overview.compactReserve', { pct: 80 }) }}
           hoverKey={hoverCat}
           onHoverKey={setHoverCat}
