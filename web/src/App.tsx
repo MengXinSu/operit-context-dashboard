@@ -15,11 +15,32 @@ import type { ContextEventRecord, RequestRecord } from './shared/types'
 // Operit 语境覆盖
 const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结' }
 
-// 模型价格表（人民币元/百万 token，按约 7.2 汇率自美元价换算；估算用，可自行调整）
-const PRICES: Record<string, { pin: number; pcache: number; pout: number }> = {
-  'deepseek-flash': { pin: 2, pcache: 0.2, pout: 3 },
-  'deepseek-chat': { pin: 2, pcache: 0.2, pout: 3 },
-  'deepseek-reasoner': { pin: 4, pcache: 1, pout: 15.8 },
+// ── 价格配置（峰谷双价，页面内可编辑，localStorage 持久；单位：人民币元/百万 token）──
+type PriceTier = { pin: number; pcache: number; pout: number }
+type ModelPrice = { peak: PriceTier; offpeak: PriceTier }
+type PriceConfig = { offpeak: { start: string; end: string }; models: Record<string, ModelPrice> }
+const DEFAULT_PRICES: PriceConfig = {
+  offpeak: { start: '00:30', end: '08:30' }, // DeepSeek 错峰时段（北京时间）
+  models: {
+    'deepseek-flash': { peak: { pin: 2, pcache: 0.2, pout: 3 }, offpeak: { pin: 1, pcache: 0.1, pout: 1.5 } },
+    'deepseek-chat': { peak: { pin: 2, pcache: 0.2, pout: 3 }, offpeak: { pin: 1, pcache: 0.1, pout: 1.5 } },
+    'deepseek-reasoner': { peak: { pin: 4, pcache: 1, pout: 15.8 }, offpeak: { pin: 2, pcache: 0.5, pout: 7.9 } },
+  },
+}
+function loadPriceConfig(): PriceConfig {
+  try {
+    const raw = localStorage.getItem('dsh-prices-v1')
+    if (raw) { const j = JSON.parse(raw); if (j && j.models && j.offpeak) return j }
+  } catch (e) { /* fall through */ }
+  return JSON.parse(JSON.stringify(DEFAULT_PRICES))
+}
+function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
+  const cur = d.getHours() * 60 + d.getMinutes()
+  const [sh, sm] = cfg.offpeak.start.split(':').map(Number)
+  const [eh, em] = cfg.offpeak.end.split(':').map(Number)
+  const st = sh * 60 + sm, en = eh * 60 + em
+  if (st <= en) return cur >= st && cur < en
+  return cur >= st || cur < en // 跨零点
 }
 
 const t = (key: string, params?: Record<string, string | number>): string => {
@@ -148,6 +169,18 @@ export function App() {
   const [mode, setMode] = useState<'total' | 'delta'>('total')
   const [state, setState] = useState<DataState>({ phase: 'loading' })
   const [refreshN, setRefreshN] = useState(0)
+  const [priceCfg, setPriceCfg] = useState<PriceConfig>(loadPriceConfig)
+  const [pricesOpen, setPricesOpen] = useState(false)
+  const updatePriceCfg = (next: PriceConfig) => {
+    setPriceCfg(next)
+    try { localStorage.setItem('dsh-prices-v1', JSON.stringify(next)) } catch (e) { /* ignore */ }
+  }
+  const setTier = (name: string, key: 'peak' | 'offpeak', field: 'pin' | 'pcache' | 'pout', val: number) => {
+    const m = priceCfg.models[name]
+    if (!m) return
+    updatePriceCfg({ ...priceCfg, models: { ...priceCfg.models, [name]: { ...m, [key]: { ...m[key], [field]: val } } } })
+  }
+  const offpeakNow = isOffpeakAt(priceCfg, new Date())
   const [browser, setBrowser] = useState<BrowserState>({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
 
   useEffect(() => {
@@ -230,11 +263,12 @@ export function App() {
       const dOut = m.output >= lastOut ? m.output - lastOut : m.output
       const dCached = m.cached >= lastCached ? m.cached - lastCached : m.cached
       lastIn = m.input; lastOut = m.output; lastCached = m.cached
-      const price = PRICES[String(m.model || '')]
-      if (price) {
+      const mp = priceCfg.models[String(m.model || '')]
+      if (mp) {
         costKnown = true
+        const tier = isOffpeakAt(priceCfg, new Date(m.sentAt)) ? mp.offpeak : mp.peak
         const cachePart = Math.min(dCached, dIn)
-        cost += ((dIn - cachePart) * price.pin + cachePart * price.pcache + dOut * price.pout) / 1e6
+        cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.pout) / 1e6
       }
     }
     return {
@@ -250,7 +284,7 @@ export function App() {
       cost,
       costKnown,
     }
-  }, [state, requests])
+  }, [state, requests, priceCfg])
 
   const totalTok = current.total || 0
 
@@ -331,8 +365,34 @@ export function App() {
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.waitSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型等待</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.outSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型生成</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.answers}</div><div style={{ fontSize: 10, opacity: 0.65 }}>回答数</div></div>
-        <div title="按模型价格表估算（¥/百万token）"><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}</div><div style={{ fontSize: 10, opacity: 0.65 }}>估算花费</div></div>
+        <div title="按模型价格表估算（¥/百万token，点击设置峰谷价）" style={{ cursor: 'pointer' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}<span style={{ fontSize: 10, marginLeft: 4, padding: '1px 5px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span></div><div style={{ fontSize: 10, opacity: 0.65 }}>估算花费</div></div>
       </div>
+      {pricesOpen ? (
+        <div className="lc-card" style={{ fontSize: 11, lineHeight: 2 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>价格设置（元/百万 token · 自动保存）</div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>谷时时段（北京时间）：</span>
+            <input type="time" value={priceCfg.offpeak.start} onChange={(e) => updatePriceCfg({ ...priceCfg, offpeak: { ...priceCfg.offpeak, start: e.target.value } })} />
+            <span>~</span>
+            <input type="time" value={priceCfg.offpeak.end} onChange={(e) => updatePriceCfg({ ...priceCfg, offpeak: { ...priceCfg.offpeak, end: e.target.value } })} />
+            <span style={{ opacity: 0.6 }}>（其余时间为峰时）</span>
+          </div>
+          {Object.keys(priceCfg.models).map((name) => (
+            <div key={name} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <b style={{ minWidth: 130 }}>{name}</b>
+              {(['peak', 'offpeak'] as const).map((tk) => (
+                <span key={tk} style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+                  <span style={{ opacity: 0.75 }}>{tk === 'peak' ? '峰' : '谷'}</span>
+                  {(['pin', 'pcache', 'pout'] as const).map((f) => (
+                    <input key={f} type="number" step="0.01" style={{ width: 52 }} value={priceCfg.models[name][tk][f]} onChange={(e) => setTier(name, tk, f, Number(e.target.value))} />
+                  ))}
+                </span>
+              ))}
+            </div>
+          ))}
+          <button className="lc-gran-btn" onClick={() => updatePriceCfg(JSON.parse(JSON.stringify(DEFAULT_PRICES)))}>恢复默认价</button>
+        </div>
+      ) : null}
 
       <div className="lc-card">
         <div className="lc-card-title">
