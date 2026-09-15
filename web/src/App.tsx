@@ -8,6 +8,7 @@ import { partsOf } from './client/categories'
 import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage,
+  fetchTodayMessages, type TodaySessionGroup,
   type MessageItem, type RawSectionData,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord } from './shared/types'
@@ -51,6 +52,9 @@ function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
   }
   return !cfg.peaks.some((sp) => inSpan(d, sp))
 }
+
+const pInp: import('react').CSSProperties = { width: 48, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
+const pNum: import('react').CSSProperties = { width: 56, padding: '2px 4px', fontSize: 11, textAlign: 'center', borderRadius: 4, border: '1px solid rgba(128,128,128,0.4)', background: 'transparent', color: 'inherit', outline: 'none' }
 
 const t = (key: string, params?: Record<string, string | number>): string => {
   let s: string = OVERRIDES[key] ?? DICT_ZH[key] ?? key
@@ -103,6 +107,7 @@ type DataState = {
   events?: any[]
   fileActivity?: any[]
   toolUsage?: any[]
+  todayGroups?: TodaySessionGroup[]
   error?: string
 }
 
@@ -210,7 +215,7 @@ export function App() {
       }
       setState({ phase: 'loading' })
       setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
-      const [sum, tl, msgs, evs, fa, tu] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage()])
+      const [sum, tl, msgs, evs, fa, tu, tm] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages()])
       if (!alive) return
       if (!sum || !sum.ok || !sum.current) {
         setState({ phase: 'error', error: (sum && sum.error) || '数据读取失败' })
@@ -230,6 +235,7 @@ export function App() {
         counts: sum.counts, worldbook: sum.worldbook,
         historyCount: sum.historyCount, requests, messages: msgs || [],
         events: evs || [], fileActivity: fa || [], toolUsage: tu || [],
+        todayGroups: (tm && tm.ok && tm.groups) ? tm.groups : [],
       })
     }
     load()
@@ -297,6 +303,29 @@ export function App() {
       costKnown,
     }
   }, [state, requests, priceCfg])
+
+  // 今日花费：今天全部会话（分组 delta，基准 = 各会话今天之前最后一条累计值）
+  const todayCost = useMemo(() => {
+    const groups = state.todayGroups || []
+    let cost = 0, known = false
+    for (const g of groups) {
+      let lastIn = g.base.input, lastOut = g.base.output, lastCached = g.base.cached
+      for (const m of g.items) {
+        const dIn = m.input >= lastIn ? m.input - lastIn : m.input
+        const dOut = m.output >= lastOut ? m.output - lastOut : m.output
+        const dCached = m.cached >= lastCached ? m.cached - lastCached : m.cached
+        lastIn = m.input; lastOut = m.output; lastCached = m.cached
+        const mp = priceCfg.models[String(m.model || '')]
+        if (mp) {
+          known = true
+          const tier = isOffpeakAt(priceCfg, new Date(m.sentAt)) ? mp.offpeak : mp.peak
+          const cachePart = Math.min(dCached, dIn)
+          cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.pout) / 1e6
+        }
+      }
+    }
+    return { cost, known }
+  }, [state.todayGroups, priceCfg])
 
   const totalTok = current.total || 0
 
@@ -377,33 +406,39 @@ export function App() {
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.waitSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型等待</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.outSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型生成</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.answers}</div><div style={{ fontSize: 10, opacity: 0.65 }}>回答数</div></div>
-        <div title="按模型价格表估算（¥/百万token，点击设置峰谷价）" style={{ cursor: 'pointer' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}<span style={{ fontSize: 10, marginLeft: 4, padding: '1px 5px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span></div><div style={{ fontSize: 10, opacity: 0.65 }}>估算花费</div></div>
+        <div title="本会话按模型价格表估算（¥/百万token）· 点击设置峰谷价、查看今日花费" style={{ cursor: 'pointer' }} onClick={() => setPricesOpen(!pricesOpen)}><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}<span style={{ fontSize: 10, marginLeft: 4, padding: '1px 5px', borderRadius: 4, background: offpeakNow ? 'rgba(34,197,94,0.18)' : 'rgba(249,115,22,0.18)', color: offpeakNow ? '#22c55e' : '#f97316' }}>{offpeakNow ? '谷' : '峰'}</span></div><div style={{ fontSize: 10, opacity: 0.65 }}>本会话估算</div></div>
       </div>
       {pricesOpen ? (
-        <div className="lc-card" style={{ fontSize: 11, lineHeight: 2 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>价格设置（元/百万 token · 自动保存）</div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span>峰时时段（北京时间·工作日）：</span>
+        <div className="lc-card" style={{ fontSize: 11 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, opacity: 0.7 }}>今日花费</span>
+            <span style={{ fontSize: 22, fontWeight: 700 }}>{todayCost.known ? '¥' + todayCost.cost.toFixed(2) : '—'}</span>
+            <span style={{ fontSize: 10, opacity: 0.5 }}>今天全部会话 · 估算</span>
+          </div>
+          <div style={{ height: 1, background: 'rgba(128,128,128,0.28)', margin: '10px 0' }} />
+          <div style={{ fontWeight: 600, marginBottom: 6, opacity: 0.85 }}>价格设置（元/百万 token · 改动自动保存）</div>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+            <span style={{ opacity: 0.75 }}>峰时（工作日）：</span>
             {priceCfg.peaks.map((sp, i) => (
               <span key={i} style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
-                {i > 0 ? <span style={{ opacity: 0.5, marginLeft: 4 }}>与</span> : null}
-                <input type="time" value={sp.start} onChange={(e) => updPeak(i, 'start', e.target.value)} />
-                <span>~</span>
-                <input type="time" value={sp.end} onChange={(e) => updPeak(i, 'end', e.target.value)} />
+                {i > 0 ? <span style={{ opacity: 0.45 }}>·</span> : null}
+                <input type="text" inputMode="numeric" maxLength={5} value={sp.start} onChange={(e) => updPeak(i, 'start', e.target.value)} style={pInp} />
+                <span style={{ opacity: 0.5 }}>~</span>
+                <input type="text" inputMode="numeric" maxLength={5} value={sp.end} onChange={(e) => updPeak(i, 'end', e.target.value)} style={pInp} />
               </span>
             ))}
-            <span style={{ opacity: 0.6 }}>（其余时间含周末为谷时）</span>
+            <span style={{ opacity: 0.55 }}>其余含周末为谷时</span>
           </div>
           {Object.keys(priceCfg.models).map((name) => (
-            <div key={name} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <b style={{ minWidth: 130 }}>{name}</b>
+            <div key={name} style={{ marginBottom: 6 }}>
+              <div style={{ fontWeight: 600, marginBottom: 3, opacity: 0.85 }}>{name}</div>
               {(['peak', 'offpeak'] as const).map((tk) => (
-                <span key={tk} style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
-                  <span style={{ opacity: 0.75 }}>{tk === 'peak' ? '峰' : '谷'}</span>
+                <div key={tk} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 3 }}>
+                  <span style={{ opacity: 0.7, width: 14, textAlign: 'center' }}>{tk === 'peak' ? '峰' : '谷'}</span>
                   {(['pin', 'pcache', 'pout'] as const).map((f) => (
-                    <input key={f} type="number" step="0.01" style={{ width: 52 }} value={priceCfg.models[name][tk][f]} onChange={(e) => setTier(name, tk, f, Number(e.target.value))} />
+                    <input key={f} type="number" step="0.01" value={priceCfg.models[name][tk][f]} onChange={(e) => setTier(name, tk, f, Number(e.target.value))} style={pNum} />
                   ))}
-                </span>
+                </div>
               ))}
             </div>
           ))}
