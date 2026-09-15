@@ -15,11 +15,11 @@ import type { ContextEventRecord, RequestRecord } from './shared/types'
 // Operit 语境覆盖
 const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结' }
 
-// 模型价格表（美元/百万 token；估算用，价格变动可自行修改）
+// 模型价格表（人民币元/百万 token，按约 7.2 汇率自美元价换算；估算用，可自行调整）
 const PRICES: Record<string, { pin: number; pcache: number; pout: number }> = {
-  'deepseek-flash': { pin: 0.28, pcache: 0.028, pout: 0.42 },
-  'deepseek-chat': { pin: 0.28, pcache: 0.028, pout: 0.42 },
-  'deepseek-reasoner': { pin: 0.55, pcache: 0.14, pout: 2.19 },
+  'deepseek-flash': { pin: 2, pcache: 0.2, pout: 3 },
+  'deepseek-chat': { pin: 2, pcache: 0.2, pout: 3 },
+  'deepseek-reasoner': { pin: 4, pcache: 1, pout: 15.8 },
 }
 
 const t = (key: string, params?: Record<string, string | number>): string => {
@@ -331,7 +331,7 @@ export function App() {
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.waitSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型等待</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{fmtDur(stats.outSum)}</div><div style={{ fontSize: 10, opacity: 0.65 }}>模型生成</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.answers}</div><div style={{ fontSize: 10, opacity: 0.65 }}>回答数</div></div>
-        <div title="按模型价格表估算（$/百万token）"><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '$' + stats.cost.toFixed(2) : '—'}</div><div style={{ fontSize: 10, opacity: 0.65 }}>估算花费</div></div>
+        <div title="按模型价格表估算（¥/百万token）"><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.costKnown ? '¥' + stats.cost.toFixed(2) : '—'}</div><div style={{ fontSize: 10, opacity: 0.65 }}>估算花费</div></div>
       </div>
 
       <div className="lc-card">
