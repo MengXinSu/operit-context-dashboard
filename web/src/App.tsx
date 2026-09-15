@@ -3,12 +3,12 @@ import { DICT_ZH } from './client/i18n'
 import { makeViewKit } from './client/viewkit'
 import { makeStackedBar, makeLegend } from './client/components/stackedBar'
 import { makeDonut } from './client/components/donut'
-import { makeTrendChart } from './client/components/trendChart'
-import { partsOf } from './client/categories'
+import { makeTrendChart, aggregateByTurn } from './client/components/trendChart'
+import { partsOf, IMG_COLOR } from './client/categories'
 import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage,
-  fetchTodayMessages, type TodaySessionGroup,
+  fetchTodayMessages, fetchSteps, type TodaySessionGroup,
   type MessageItem, type RawSectionData,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord } from './shared/types'
@@ -87,6 +87,18 @@ const DEMO_CURRENT = {
   assistant: 160000, tool: 400000, total: 592000,
 }
 
+/** 桥 timeline/steps 原始项 → RequestRecord 统一映射（步骤重建数据同形状） */
+function toRequests(items: any[] | null): RequestRecord[] {
+  return (items || []).map((it, i) => ({
+    seq: it.seq || i + 1,
+    turn: it.turn || Math.ceil((i + 1) / 8),
+    step: it.step || (i % 8) + 1,
+    time: it.t,
+    system: it.system, tools: it.tools, user: it.user, inject: it.inject,
+    skill: it.skill, summary: it.summary, assistant: it.assistant, tool: it.tool, total: it.total,
+    historyCount: it.historyCount, historyChars: it.historyChars,
+  }))
+}
 function demoRequests(): RequestRecord[] {
   const out: RequestRecord[] = []
   for (let i = 1; i <= 60; i++) {
@@ -113,6 +125,7 @@ type DataState = {
   worldbook?: { blocks: number; chars: number; entries: number; names: string[] }
   historyCount?: number
   requests?: RequestRecord[]
+  steps?: RequestRecord[]
   messages?: MessageItem[]
   events?: any[]
   fileActivity?: any[]
@@ -130,6 +143,7 @@ type BrowserState = {
   error: string
   expanded: Record<number, string>
   expanding: number | null
+  loadingMore?: boolean
 }
 
 const BROWSER_CATS: { key: string; label: string; color: string }[] = [
@@ -190,7 +204,8 @@ export function App() {
   const [selected, setSelected] = useState<number | null>(null)
   const [hovered, setHovered] = useState<number | null>(null)
   const [hoverCat, setHoverCat] = useState<string | null>(null)
-  const [granularity, setGranularity] = useState<'step' | 'turn'>(() => (loadPrefs().granularity === 'turn' ? 'turn' : 'step'))
+  //轮次/步骤视图切换：轮次=快照聚合（每轮1条）；步骤=宿主从 raw 事后切分重建（每请求1条）。偏好持久化。
+  const [granularity, setGranularity] = useState<'step' | 'turn'>(() => (loadPrefs().granularity === 'step' ? 'step' : 'turn'))
   const [mode, setMode] = useState<'total' | 'delta'>(() => (loadPrefs().mode === 'delta' ? 'delta' : 'total'))
   const [state, setState] = useState<DataState>({ phase: 'loading' })
   const [refreshN, setRefreshN] = useState(0)
@@ -227,25 +242,18 @@ export function App() {
       }
       setState({ phase: 'loading' })
       setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
-      const [sum, tl, msgs, evs, fa, tu, tm] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages()])
+      const [sum, tl, msgs, evs, fa, tu, tm, st] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages(), fetchSteps()])
       if (!alive) return
       if (!sum || !sum.ok || !sum.current) {
         setState({ phase: 'error', error: (sum && sum.error) || '数据读取失败' })
         return
       }
-      const requests: RequestRecord[] = (tl || []).map((it, i) => ({
-        seq: it.seq || i + 1,
-        turn: (it as any).turn || Math.ceil((i + 1) / 8),
-        step: (it as any).step || (i % 8) + 1,
-        time: it.t,
-        system: it.system, tools: it.tools, user: it.user, inject: it.inject,
-        skill: it.skill, summary: (it as any).summary, assistant: it.assistant, tool: it.tool, total: it.total,
-        historyCount: (it as any).historyCount, historyChars: (it as any).historyChars,
-      }))
+      const requests = toRequests(tl)
+      const steps = toRequests(st)
       setState({
         phase: 'ready', session: sum.session, cardName: (sum as any).cardName, current: sum.current,
         counts: sum.counts, worldbook: sum.worldbook,
-        historyCount: sum.historyCount, requests, messages: msgs || [],
+        historyCount: sum.historyCount, requests, steps, messages: msgs || [],
         events: evs || [], fileActivity: fa || [], toolUsage: tu || [],
         todayGroups: (tm && tm.ok && tm.groups) ? tm.groups : [],
         imgAtt: (sum as any).imgAttachments || undefined,
@@ -257,13 +265,25 @@ export function App() {
 
   const current = state.current || (state.phase === 'demo' ? DEMO_CURRENT : { system: 0, tools: 0, user: 0, inject: 0, skill: 0, assistant: 0, tool: 0, total: 0 })
   const requests = state.requests || []
-  const parts = useMemo(() => partsOf(current as any), [current])
+  const parts = useMemo(() => {
+    const ps = partsOf(current as any)
+    //「图片」第十段（动态）：仅当上下文含图片附件 token 时追加到九段之后；无图时不占位
+    const imgTok = (current as any).img || 0
+    if (imgTok > 0) ps.push({ key: 'img', color: IMG_COLOR, value: imgTok })
+    return ps
+  }, [current])
   const segments = useMemo(() => parts.map((p) => ({ key: p.key, color: p.color, value: p.value })), [parts])
 
+  //轮次/步骤切换：轮次=每轮一根柱（取该轮末步记录聚合，附 stepCount）；步骤=每步一根柱。与上游 dsh-context 行为一致。
+  const displayRequests = useMemo(
+    () => (granularity === 'turn' ? aggregateByTurn(requests) : (hasBridge() ? (state.steps || []) : requests)),
+    [requests, granularity, state.steps],
+  )
+
   const markers = useMemo<(ContextEventRecord | undefined)[]>(() => {
-    return requests.map((r, idx) => {
+    return displayRequests.map((r, idx) => {
       if (idx > 0) {
-        const prev = requests[idx - 1]
+        const prev = displayRequests[idx - 1]
         const hc0 = prev.historyCount || 0
         const hc1 = r.historyCount || 0
         if (hc0 > 0 && hc1 > 0 && hc1 < hc0 * 0.5) {
@@ -272,7 +292,7 @@ export function App() {
       }
       return undefined
     })
-  }, [requests])
+  }, [displayRequests])
 
   const stats = useMemo(() => {
     const msgs = state.messages || []
@@ -305,7 +325,7 @@ export function App() {
     return {
       turns: requests.length,
       turnCount: lastTurn,
-      steps: requests.length,
+      steps: (state.steps && state.steps.length > 0) ? state.steps.length : requests.length,
       toolCalls: state.counts ? (state.counts.TOOL_CALL || 0) : 0,
       hit: inSum > 0 ? Math.round((cachedSum / inSum) * 100) : 0,
       waitSum,
@@ -346,16 +366,20 @@ export function App() {
   // 选中趋势柱 → 该轮详情（组成 + 对应完成态的用量/耗时）
   const selectedInfo = useMemo(() => {
     if (selected === null) return null
-    const idx = requests.findIndex((r) => r.seq === selected)
+    const pool = granularity === 'step' ? displayRequests : requests
+    const idx = pool.findIndex((r) => r.seq === selected)
     if (idx < 0) return null
-    const r = requests[idx]
+    const r = pool[idx]
     const t0 = r.time
-    const t1 = idx + 1 < requests.length ? requests[idx + 1].time : Number.MAX_SAFE_INTEGER
+    const t1 = idx + 1 < pool.length ? pool[idx + 1].time : Number.MAX_SAFE_INTEGER
     const msgs = state.messages || []
     const hit = msgs.filter((m) => m.sentAt >= t0 && m.sentAt < t1)
     const usage = hit.length ? hit[hit.length - 1] : (msgs.find((m) => m.sentAt >= t0) || null)
-    return { r, usage }
-  }, [selected, requests, state.messages])
+    // 该轮步数：取聚合记录自带的 stepCount（连续段内精确计数；直接 filter 全表会把压缩前后的同名轮串起来算多）
+    const agg = displayRequests.find((x) => x.seq === selected)
+    const turnSteps = agg && agg.stepCount !== undefined ? agg.stepCount : 0
+    return { r, usage, turnSteps }
+  }, [selected, requests, state.messages, displayRequests])
 
   async function openSection(cat: string, label: string) {
     if (browser.cat === cat) {
@@ -370,10 +394,14 @@ export function App() {
   async function loadMore() {
     const b = browser
     if (!b.cat || !b.data || !b.data.items) return
+    if (b.loadingMore) return // 防重入：连点会重复追加同一段
+    setBrowser((prev) => ({ ...prev, loadingMore: true }))
     const more = await fetchRawSection(b.cat, b.data.items.length, 30)
-    if (more && more.ok && more.items) {
-      setBrowser((prev) => prev.cat === b.cat && prev.data ? { ...prev, data: { ...prev.data, items: [...(prev.data.items || []), ...(more.items || [])] } } : prev)
-    }
+    setBrowser((prev) => {
+      if (prev.cat !== b.cat || !prev.data) return { ...prev, loadingMore: false }
+      const items = (more && more.ok && more.items) ? [...(prev.data.items || []), ...more.items] : prev.data.items
+      return { ...prev, loadingMore: false, data: { ...prev.data, items } }
+    })
   }
 
   async function expandItem(idx: number) {
@@ -387,9 +415,11 @@ export function App() {
       return
     }
     if (browser.expanding === idx) return
+    const catAtReq = browser.cat
     setBrowser((b) => ({ ...b, expanding: idx }))
     const item = await fetchRawItem(idx)
-    setBrowser((b) => ({ ...b, expanding: null, expanded: item && item.ok && item.content !== undefined ? { ...b.expanded, [idx]: item.content } : b.expanded }))
+    // 迟到响应防串台：分类没变才写入（与 openSection 的守卫同款）
+    setBrowser((b) => b.cat !== catAtReq ? b : ({ ...b, expanding: null, expanded: item && item.ok && item.content !== undefined ? { ...b.expanded, [idx]: item.content } : b.expanded }))
   }
 
   return (
@@ -464,16 +494,18 @@ export function App() {
         <div className="lc-card-title">
           <span className="lc-card-title-text">{t('stats.title')}</span>
         </div>
-        <Donut segments={segments} centerTop={'≈' + fmtTok(totalTok)} centerSub={t('overview.estimate')} hoverKey={hoverCat} onHoverKey={setHoverCat} />
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginTop: 10, fontSize: 11.5 }}>
-          {segments.filter((s) => s.value > 0).map((s) => (
-            <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 7, height: 7, borderRadius: 4, background: s.color, flex: 'none' }} />
-              <span>{t('cat.' + s.key)}</span>
-              <b style={{ fontWeight: 600 }}>≈{fmtTok(s.value)}</b>
-              <span style={{ opacity: 0.55 }}>{totalTok > 0 ? Math.round((s.value / totalTok) * 100) : 0}%</span>
-            </span>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <Donut segments={segments} centerTop={'≈' + fmtTok(totalTok)} centerSub={t('overview.estimate')} hoverKey={hoverCat} onHoverKey={setHoverCat} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11.5, minWidth: 150, flex: 1 }}>
+            {segments.map((s) => (
+              <span key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 7, height: 7, borderRadius: 4, background: s.color, flex: 'none' }} />
+                <span>{t('cat.' + s.key)}</span>
+                <b style={{ fontWeight: 600, marginLeft: 'auto' }}>≈{fmtTok(s.value)}</b>
+                <span style={{ opacity: 0.55, width: 32, textAlign: 'right' }}>{totalTok > 0 ? Math.round((s.value / totalTok) * 100) : 0}%</span>
+              </span>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -601,7 +633,7 @@ export function App() {
         </div>
         {requests.length > 0 ? (
           <TrendChart
-            requests={requests}
+            requests={displayRequests}
             markers={markers}
             selectedSeq={selected}
             hoveredSeq={hovered}
@@ -623,7 +655,7 @@ export function App() {
         {selectedInfo ? (
           <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 8, fontSize: 11.5, lineHeight: 1.9 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontWeight: 600 }}>第 {selectedInfo.r.turn} 轮 · 第 {selectedInfo.r.step} 步</span>
+              <span style={{ fontWeight: 600 }}>{granularity === 'step' ? `第 ${selectedInfo.r.turn} 轮 · 第 ${selectedInfo.r.step} 步` : (selectedInfo.turnSteps > 1 ? `第 ${selectedInfo.r.turn} 轮 · 共 ${selectedInfo.turnSteps} 步` : `第 ${selectedInfo.r.turn} 轮`)}</span>
               <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span>
               <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setSelected(null)}>✕</button>
             </div>

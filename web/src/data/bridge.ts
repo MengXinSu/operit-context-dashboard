@@ -99,6 +99,20 @@ export async function fetchTimeline(): Promise<TimelineItem[] | null> {
   return r && r.ok && r.items ? r.items : null
 }
 
+/** 步骤重建数据（宿主从 raw 事后切分：每轮内按工具结果批次拆步） */
+export interface StepItem extends TimelineItem {
+  turn?: number
+  step?: number
+  summary?: number
+  historyCount?: number
+  historyChars?: number
+}
+
+export async function fetchSteps(): Promise<StepItem[] | null> {
+  const r = await call<{ ok: boolean; items?: StepItem[] }>('steps')
+  return r && r.ok && r.items ? r.items : null
+}
+
 export async function fetchMessages(): Promise<MessageItem[] | null> {
   const r = await call<{ ok: boolean; items?: MessageItem[] }>('messages')
   return r && r.ok && r.items ? r.items : null

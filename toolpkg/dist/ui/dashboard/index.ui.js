@@ -279,7 +279,7 @@ async function listChatmsgFiles(maxFiles) {
 /** 今日花费数据：最近3个 chatmsg 文件里「今天」的完成态消息，按会话分组；base = 该会话今天之前最后一行的累计值 */
 async function apiTodayMessages() {
   try {
-    var files = await listChatmsgFiles(3);
+    var files = await listChatmsgFiles(99); // base 要尽量早：读全部现存 chatmsg 文件（保留期由日志策略管控），避免「≥3 天未用的会话再启用」时当日首条把历史累计误算进今日
     var all = [];
     for (var f = 0; f < files.length; f++) {
       var t = await readText(PV_DIR + "/" + files[f]);
@@ -595,22 +595,28 @@ async function apiTimeline(keyIn) {
     }
   }
   var out = [];
-  var curTurn = 0;
+  //轮号跨压缩续编（2026-09-15）：countByKind.USER 是「当前留存窗口」内的用户消息数，
+  //压缩后窗口重排、该计数骤降（实测 …16→2），直接当轮号会让趋势图回跳/分段。
+  //改为增量映射：增长按差值累加；压缩骤降视为新一轮只 +1；同值视为同轮不同步骤。
+  var turnCounter = 0;
   var curStep = 0;
   var lastUserCount = -1;
   for (var k = 0; k < merged.length; k++) {
     var r = merged[k];
     var cb = r.charsByKind || {};
     var uc = (r.countByKind && r.countByKind.USER) || 0;
-    if (uc !== lastUserCount) { curTurn = uc > 0 ? uc : curTurn + 1; curStep = 1; lastUserCount = uc; }
+    if (lastUserCount < 0) { turnCounter = uc > 0 ? uc : 1; curStep = 1; }
+    else if (uc > lastUserCount) { turnCounter += uc - lastUserCount; curStep = 1; }
+    else if (uc < lastUserCount) { if (uc > 0) turnCounter += 1; curStep = 1; }
     else { curStep++; }
+    if (uc > 0) lastUserCount = uc;
     var seg = r.sys || liveSeg || null;
     var wb0 = seg ? (seg.wb || 0) : 0;
     var sk0 = seg ? (seg.sk || 0) : 0;
     var up0 = seg ? (seg.up || 0) : 0;
     var rec = {
       seq: k + 1,
-      turn: curTurn,
+      turn: turnCounter,
       step: curStep,
       t: r.atMs,
       stage: r.stage,
@@ -633,6 +639,113 @@ async function apiTimeline(keyIn) {
     }
     out.push(rec);
   }
+  return { ok: true, items: out };
+}
+
+/** 步骤重建（2026-09-15）：从最新 raw 的 preparedHistory 事后切分每一步（请求）的上下文量。
+ *  数据基础：工具往返不触发钩子，但每次工具调用/结果都会沉淀进下一轮历史；消息序列是线性的，
+ *  按顺序切分即可：每轮 USER 起 = step1；一段连续 TOOL_RESULT 结束 = 下一请求点（step++）。
+ *  轮号对齐：raw 最后的 USER = 最后一轮（快照续编 turn T，若本轮 send 快照未写则 +deltaU）；
+ *  时间：无逐步时间戳，按轮映射快照 atMs（本轮用 raw 捕获时间兜底）。零新增写盘。
+ */
+async function apiSteps(keyIn) {
+  var key = keyIn || await latestKey();
+  if (!key) return { ok: false, error: "no key" };
+  var payload = await loadRaw(key);
+  if (!payload) return { ok: false, error: "raw解析失败" };
+  var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory : [];
+  var kindOf = function (m) { return String((m && (m.kind || m.role)) || "").toUpperCase(); };
+  // 工具定义体量 + SYSTEM 三段拆分（每步恒定）
+  var toolsChars = 0;
+  try { toolsChars = JSON.stringify(payload.availableTools || []).length; } catch (e0) {}
+  var wbChars = 0, skChars = 0, upChars = 0;
+  for (var si = 0; si < hist.length; si++) {
+    if (kindOf(hist[si]) === "SYSTEM") {
+      var st = String(hist[si].content || "");
+      try {
+        wbChars = extractWorldbook(st).chars; skChars = extractSkillPack(st).chars; upChars = extractUserProfile(st).chars;
+      } catch (eS) { wbChars = 0; skChars = 0; upChars = 0; }
+      break;
+    }
+  }
+  // 轮号对齐：U = raw 内 USER 数；快照末轮 T 与窗口内 USER 数 ucLast → deltaU 预期 0/1
+  var U = 0;
+  for (var ui = 0; ui < hist.length; ui++) { if (kindOf(hist[ui]) === "USER") U++; }
+  var T = U, ucLast = -1, deltaU = 0, snapTimes = [];
+  try {
+    var tl = await apiTimeline(key);
+    if (tl && tl.ok && tl.items && tl.items.length) T = tl.items[tl.items.length - 1].turn || U;
+  } catch (eT) { /* 退化：T 以 U 起编 */ }
+  try {
+    var snaps = await readJsonl("snapshots-", 3);
+    var filtered = [];
+    for (var ii = 0; ii < snaps.length; ii++) { if (snaps[ii] && snaps[ii].session === key) filtered.push(snaps[ii]); }
+    filtered.sort(function (a, b) { return (a.atMs || 0) - (b.atMs || 0); });
+    var merged = [];
+    for (var jj = 0; jj < filtered.length; jj++) {
+      var s0 = filtered[jj];
+      var last0 = merged.length ? merged[merged.length - 1] : null;
+      if (last0 && Math.abs((s0.atMs || 0) - last0.atMs) < 10000) merged[merged.length - 1] = s0;
+      else merged.push(s0);
+    }
+    for (var mk = 0; mk < merged.length; mk++) { snapTimes.push(merged[mk].atMs || 0); }
+    if (merged.length) {
+      var mu = merged[merged.length - 1];
+      ucLast = (mu.countByKind && mu.countByKind.USER) || 0;
+      deltaU = U - ucLast;
+      if (deltaU < 0 || deltaU > 3) deltaU = 0; // 异常差退化为按 U 起编
+    }
+  } catch (eSn) { /* 无快照：全部用兜底时间 */ }
+  var fallbackAt = 0;
+  try { fallbackAt = payload.capturedAtMs || Date.now(); } catch (eF) { fallbackAt = Date.now(); }
+  // 主扫描：前缀累计 + 请求点打点
+  var acc = { SYSTEM: 0, USER: 0, ASSISTANT: 0, TOOL_CALL: 0, TOOL_RESULT: 0, SUMMARY: 0 };
+  var accMsgs = 0, accChars = 0, userSeen = 0, seq = 0, curTurn = 0, curStep = 0, curAt = fallbackAt;
+  var out = [];
+  var pushPoint = function () {
+    seq += 1;
+    var rec = {
+      seq: seq, turn: curTurn, step: curStep, t: curAt,
+      system: estTok(Math.max(0, acc.SYSTEM - wbChars - skChars - upChars)),
+      tools: estTok(toolsChars),
+      user: estTok(acc.USER),
+      inject: estTok(wbChars),
+      skill: estTok(skChars),
+      summary: estTok(acc.SUMMARY),
+      assistant: estTok(acc.ASSISTANT),
+      tool: estTok(acc.TOOL_CALL + acc.TOOL_RESULT),
+      historyCount: accMsgs,
+      historyChars: accChars
+    };
+    rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
+    if (rec.total > 960000) {
+      anchorTo(rec, ["system", "tools", "user", "inject", "skill", "summary", "assistant", "tool"], 960000);
+      rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
+    }
+    out.push(rec);
+  };
+  for (var x = 0; x < hist.length; x++) {
+    var it = hist[x] || {};
+    var k = kindOf(it);
+    var len = String(it.content || "").length;
+    acc[k] = (acc[k] || 0) + len;
+    accMsgs += 1; accChars += len;
+    if (k === "USER") {
+      userSeen += 1;
+      var idxFromEnd = U - userSeen; // 0 = 最后一个 USER
+      curTurn = T + deltaU - idxFromEnd;
+      if (curTurn < 1) curTurn = 1;
+      curStep = 1;
+      var snapIdx = snapTimes.length - 1 - (idxFromEnd - deltaU);
+      curAt = (snapIdx >= 0 && snapIdx < snapTimes.length) ? snapTimes[snapIdx] : fallbackAt;
+      pushPoint();
+    } else if (k === "TOOL_RESULT") {
+      var nxt = hist[x + 1];
+      if (kindOf(nxt) !== "TOOL_RESULT") { curStep += 1; pushPoint(); }
+    }
+  }
+  // 保险：截断超长（保留最近 1500 步）
+  if (out.length > 1500) out = out.slice(out.length - 1500);
   return { ok: true, items: out };
 }
 
@@ -895,6 +1008,7 @@ function Screen(ctx) {
           var out;
           if (method === "summary") out = await apiSummary(key);
           else if (method === "timeline") out = await apiTimeline(key);
+          else if (method === "steps") out = await apiSteps(key);
           else if (method === "events") out = await apiEvents(key);
           else if (method === "fileActivity") out = await apiFileActivity(key);
           else if (method === "toolUsage") out = await apiToolUsage(key);

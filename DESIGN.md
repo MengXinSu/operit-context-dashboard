@@ -282,7 +282,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 |---|---|---|
 | `stackedBar` | 构成条（当前上下文/浏览器 DNA） | 支持 `max`（窗口基准，如 1,000,000）、`free` 剩余空槽、`reserve` 压缩预留斜纹（0.8 处）、hover 联动、最小带宽 |
 | `donut` | 环形图（构成/耗时） | 段→弧换算、中心大字 + 小字、hover 高亮（`hoverKey/onHoverKey`） |
-| `trendChart` | 逐轮堆叠柱趋势 | 自适应 y 轴、步骤/轮次粒度、全量/增量模式、选中/悬停联动 |
+| `trendChart` | 逐轮堆叠柱趋势 | 自适应 y 轴、轮次聚合（原「步骤/轮次」切换已移除，2026-09-15——快照=每轮 1 条，无独立步骤数据，见坑 13）、全量/增量模式、选中/悬停联动 |
 | `legend` | 图例行 | 色点 + 名称 + 值，与条/环共享 hoverKey |
 | `viewkit` | 工具包（t/fmt/catLabel 等注入） | 所有组件通过 make*(kit) 工厂创建 |
 
@@ -297,7 +297,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 当前上下文：≈X / 1.0M · Y%已用 + 1M 窗口条 + 明细九类 + 图片附件行（N 张 ≈X tokens）
 上下文浏览器：10 个可展开分类（系统提示词/技能注入/世界书/用户资料/对话总结/工具定义/用户消息/助手消息/工具结果/全部历史）
 耗时统计：Donut（模型等待/模型生成/工具与开销）+ 图例（时长 + 百分比）
-趋势：堆叠柱（步骤/轮次切换、全量/增量切换）
+趋势：堆叠柱（轮次聚合 + 全量/增量切换）
 世界书 · 本轮注入 / 上下文事件 / 文件活动 / 工具使用
 ```
 
@@ -313,7 +313,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | 键 | 内容 | 说明 |
 |---|---|---|
 | `dsh-prices-v2` | 价格配置 `{peaks:[], weekdaysOnly, models:{name:{peak:{pin,pcache,pout},offpeak:{…}}}}` | 改价自动保存 |
-| `dsh-prefs-v1` | 用户偏好 `{granularity:'step'|'turn', mode:'total'|'delta'}` | 趋势切换持久化 |
+| `dsh-prefs-v1` | 用户偏好 `{mode:'total'|'delta'}` | 趋势全量/增量持久化（granularity 键已于 2026-09-15 移除，旧值不再读取） |
 
 ### 5.6 交互细节
 
@@ -362,6 +362,8 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 10. **效率提醒**：部分 Operit 工具（如 `debug_install_toolpkg`）每次调用会返回全量包列表（单次 ~46k 字符 ≈ 23k tokens）——批量合并调用、减少次数，可显著节省上下文。
 11. **时区**：所有"今天/峰谷"判定使用设备本地时区（北京），时间戳存毫秒 epoch。
 12. **数据规模**：会话数据环形保留 100 个、日志 14 天，长期稳定在 ~10-50MB。
+13. **快照粒度 = 每条用户消息 1 条**：`prompt_finalize`（含 send 阶段）只在用户消息触发的完整装配流程里触发；assistant 的工具往返请求**不触发**（实测：raw/快照文件在工具往返期间不更新）——快照里没有「每步」数据，「步骤」与「轮次」在数据上等价。**「轮次/步骤」切换器已由此移除**（2026-09-15，UI 固定为轮次聚合视图；详情标题简化为「第 t 轮」，多步时才带「共 n 步」）。若未来 Operit 提供逐请求级钩子，可恢复切换。
+14. **轮号跨压缩续编**（2026-09-15）：快照的 `countByKind.USER` 是「当前留存窗口」内的用户消息数，上下文压缩后窗口重排、该计数骤降（实测一段序列 …16→2）。宿主 `apiTimeline` 不再直接用它当轮号，改为增量续编 `turnCounter`：增长按差值累加；压缩骤降视为新一轮 +1；同值视为同轮不同步骤。真实会话数据（69 条快照、含 3 次压缩）复算：旧算法 3 次回跳 → 新算法 0 次。**残留**：个别轮次采集端未写 send 阶段快照，图上偶发跳 1-2 格（非回跳）。
 
 ---
 

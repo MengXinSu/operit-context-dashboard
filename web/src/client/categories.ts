@@ -43,6 +43,9 @@ export const CATS: { key: Category | 'system' | 'tools' | 'profile'; color: stri
 /** Category key → bar color, for per-item bands (the browser's DNA mode) that bypass the CATS-order part builders. */
 export const CAT_COLOR = Object.fromEntries(CATS.map(c => [c.key, c.color])) as Record<Category | 'system' | 'tools', string>
 
+/** 「图片」第十段颜色（2026-09-15）：图片 token 作为动态段由 App 追加到 parts 末尾（不进 CATS 顺序），无图时不占位。 */
+export const IMG_COLOR = 'var(--color-violet-500)'
+
 const MESSAGE_CATS: readonly (Category | 'system' | 'tools')[] = ['user', 'inject', 'skill', 'assistant', 'tool']
 
 export function partsOf(breakdown: Snapshot['current'] | RequestRecord): PartsPart[] {
