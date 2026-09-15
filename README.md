@@ -46,6 +46,10 @@ npm run build
 
 构建产物经 `inline.mjs` 内联为单文件 HTML（`index.single.html`），复制到上面的 assets 路径即可。
 
+## 设计与重建文档
+
+完整的架构说明、数据结构（字段级 schema）、桥协议、全部关键算法与已知坑清单见 **[DESIGN.md](DESIGN.md)**——可作为从零复刻该插件的完整重建指南。
+
 ## Credits & License
 
 - UI 设计与部分代码**衍生自 [bowenliang123/dsh-context](https://github.com/bowenliang123/dsh-context)**（Apache-2.0），已为 Operit 平台做大量修改；修改过的文件在文件头有标注。
