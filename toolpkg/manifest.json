@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "toolpkg_id": "com.operit.prompt_viewer_ui",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "main": "dist/main.js",
   "display_name": {
     "zh": "上下文仪表盘",

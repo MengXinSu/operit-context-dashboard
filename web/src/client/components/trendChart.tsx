@@ -7,7 +7,7 @@
 
 import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type UIEvent } from 'react'
 import type { Category, ContextEventRecord, RequestRecord } from '../../shared/types'
-import { CATS } from '../categories'
+import { CATS, IMG_COLOR } from '../categories'
 import { containHorizontalOverscroll } from '../overscroll'
 import type { ViewKit } from '../viewkit'
 
@@ -151,6 +151,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
     const key = cat as Category | 'system' | 'tools'
     const out: RequestRecord = { ...req }
     const v = req[key] || 0
+    out.img = 0
     out.total = v
     for (const c of CATS) out[c.key] = c.key === key ? v : 0
     return out
@@ -172,6 +173,10 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
       churn += Math.abs(d)
       net += d
     }
+    const di = prev !== null ? (req.img || 0) - (prev.img || 0) : 0
+    out.img = di
+    churn += Math.abs(di)
+    net += di
     out.total = churn
     out.net = net
     return out
@@ -245,6 +250,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
                 if (d <= 0) return null
                 return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(d * (props.deltaScale as number)))}px`, background: c.color }} />
               })}
+              {(req.img || 0) > 0 ? (<div key="img" data-cat="img" className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round((req.img || 0) * (props.deltaScale as number)))}px`, background: IMG_COLOR }} />) : null}
             </div>
             <div className="lc-bar-down animate-lc-bar-in motion-reduce:animate-none" style={{ top: `${props.upPx}px`, ...enterStyle }}>
               {CATS.map((c) => {
@@ -252,6 +258,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
                 if (d >= 0) return null
                 return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(-d * (props.deltaScale as number)))}px`, background: c.color }} />
               })}
+              {(req.img || 0) < 0 ? (<div key="img" data-cat="img" className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(-(req.img || 0) * (props.deltaScale as number)))}px`, background: IMG_COLOR }} />) : null}
             </div>
           </>
         ) : (
@@ -262,6 +269,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
               // px (not %) heights: the stack is content-driven, so percentage heights would collapse against an indefinite base.
               return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(v / props.maxTotal * CHART_H))}px`, background: c.color }} />
             })}
+            {(req.img || 0) > 0 ? (<div key="img" data-cat="img" className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round((req.img || 0) / props.maxTotal * CHART_H))}px`, background: IMG_COLOR }} />) : null}
           </div>
         )}
       </div>
@@ -316,6 +324,8 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
             if (d > 0) bu += d
             else bd -= d
           }
+          const di = req.img || 0;
+          if (di > 0) bu += di; else bd -= di;
           if (bu > up) up = bu
           if (bd > down) down = bd
         } else if (req.total > total) {
@@ -340,6 +350,8 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactE
           if (d > 0) up += d
           else down -= d
         }
+        const di = req.img || 0;
+        if (di > 0) up += di; else down -= di;
         if (up > maxUp) maxUp = up
         if (down > maxDown) maxDown = down
       }

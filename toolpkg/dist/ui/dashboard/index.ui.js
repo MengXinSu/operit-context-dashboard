@@ -189,6 +189,25 @@ async function imageSizeOf(path) {
   IMG_SIZE_CACHE[path] = result;
   return result;
 }
+/**图片路径 → token 估算（含缓存；文件不在或解析失败按 350 估）：供趋势图每轮图片段，与 apiSummary 同口径 */
+var IMG_TOKEN_CACHE = {};
+function imgTokensOfPath(path) {
+  if (IMG_TOKEN_CACHE[path] !== undefined) return IMG_TOKEN_CACHE[path];
+  var p = (async function () {
+    var tk = 350;
+    try {
+      var dim = await imageSizeOf(path);
+      if (dim) {
+        var t = estimateImageTokens(dim.w, dim.h);
+        if (t !== null) tk = t;
+      }
+    } catch (e) { /*读不到按 350 估 */ }
+    return tk;
+  })();
+  IMG_TOKEN_CACHE[path] = p;
+  return p;
+}
+
 /** 会话的官方 usage 轮次（chatmsg 去重、按时间升序；每轮 inputDelta = 该轮真实输入总量的增量） */
 async function usageRounds(key) {
   var msgs = await readJsonl("chatmsg-", 3);
@@ -618,6 +637,14 @@ async function apiTimeline(keyIn) {
     var wb0 = seg ? (seg.wb || 0) : 0;
     var sk0 = seg ? (seg.sk || 0) : 0;
     var up0 = seg ? (seg.up || 0) : 0;
+    //图片附件段（2026-09-15）：快照行 imgPaths → 逐路径估算（含缓存）；旧快照无此字段（= 0）
+    var imgTok0 = 0;
+    if (Array.isArray(r.imgPaths) && r.imgPaths.length > 0) {
+      for (var ip2 = 0; ip2 < r.imgPaths.length; ip2++) {
+        imgTok0 += await imgTokensOfPath(r.imgPaths[ip2]);
+      }
+    }
+    var imgCount0 = Array.isArray(r.imgPaths) ? r.imgPaths.length : 0;
     var rec = {
       seq: k + 1,
       turn: turnCounter,
@@ -633,13 +660,15 @@ async function apiTimeline(keyIn) {
       assistant: estTok(cb.ASSISTANT),
       tool: estTok((cb.TOOL_CALL || 0) + (cb.TOOL_RESULT || 0)),
       historyCount: r.historyCount || 0,
-      historyChars: r.historyChars || 0
+      historyChars: r.historyChars || 0,
+      img: imgTok0,
+      imgCount: imgCount0
     };
-    rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
+    rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool + (rec.img || 0);
     // 上限保护：单轮估算超过 96 万时按比例压缩
     if (rec.total > 960000) {
-      anchorTo(rec, ["system", "tools", "user", "inject", "skill", "summary", "assistant", "tool"], 960000);
-      rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
+      anchorTo(rec, ["system", "tools", "user", "inject", "skill", "summary", "assistant", "tool", "img"], 960000);
+      rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool + (rec.img || 0);
     }
     out.push(rec);
   }

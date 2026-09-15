@@ -543,6 +543,10 @@ export interface RequestRecord {
   /** 续编跳变吞掉的虚拟轮数（系统警告/截断类）：宿主 apiTimeline 设置；>0 时趋势图该柱标红。 */
   skip?: number
   stepCount?: number
+  /** 图片附件 token（Operit）：该轮留存历史里图片附件估算合计（快照行 imgPaths → 桥层按官方公式估算；文件读不到按 350/张）。旧数据无此字段（读作 0）。 */
+  img?: number
+  /** 图片附件张数（配套 img）。 */
+  imgCount?: number
   /**
    * Delta-mode signed net change, set by the Client's deltaOf (only present
    * on the delta-transformed records the TrendChart plots). The Host never

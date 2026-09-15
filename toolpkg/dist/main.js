@@ -435,6 +435,27 @@ function segUserProfile(sysText) {
   return lines.slice(start, end).join("\n").length;
 }
 
+/** 图片附件路径（去重；只存路径，token 估算留给 UI 桥层）：与 dashboard apiSummary 同口径——扫历史里 <attachment ... type="image...> 的 id */
+function imgPathsOf(hist) {
+  var out = [];
+  try {
+    var seen = {};
+    var idRe = /id="([^"]+)"/;
+    for (var i = 0; i < hist.length; i++) {
+      var c = str((hist[i] || {}).content);
+      if (c.indexOf("<attachment") < 0) continue;
+      var ms = c.match(/<attachment[^>]*type="image[^>]*>/g);
+      if (!ms) continue;
+      for (var j = 0; j < ms.length; j++) {
+        var m = idRe.exec(ms[j]);
+        var p = m ? m[1] : "";
+        if (p && !seen[p]) { seen[p] = 1; out.push(p); }
+      }
+    }
+  } catch (e) { /* 静默，不影响快照主体 */ }
+  return out;
+}
+
 /** 每轮轻量快照（挂在 onPromptFinalize 内，独立 try/catch） */
 function collectSnapshot(payload) {
   var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory
@@ -481,7 +502,8 @@ function collectSnapshot(payload) {
     countByKind: countByKind,
     rawInputChars: str(payload.rawInput).length,
     modelParams: Array.isArray(payload.modelParameters) ? payload.modelParameters.length : -1,
-    sys: segSys
+    sys: segSys,
+    imgPaths: imgPathsOf(hist)
   });
 }
 

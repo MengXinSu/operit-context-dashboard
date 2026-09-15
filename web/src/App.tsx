@@ -98,6 +98,7 @@ function toRequests(items: any[] | null): RequestRecord[] {
     skill: it.skill, summary: it.summary, assistant: it.assistant, tool: it.tool, total: it.total,
     historyCount: it.historyCount, historyChars: it.historyChars,
     skip: it.skip,
+    img: it.img, imgCount: it.imgCount,
   }))
 }
 function demoRequests(): RequestRecord[] {
@@ -106,15 +107,22 @@ function demoRequests(): RequestRecord[] {
     const user = 520 + (i % 5) * 80
     const tool = 2400 + (i % 11) * 420
     const assistant = 900 + (i % 9) * 160
-    const total = 16000 + 12000 + user + assistant + tool
+    const img = i % 16 === 0 ? 690 : 0
+    const total = 16000 + 12000 + user + assistant + tool + img
     out.push({
       seq: i, turn: Math.ceil(i / 8), step: ((i - 1) % 8) + 1,
       time: Date.now() - (61 - i) * 45000,
-      system: 16000, tools: 12000, user, inject: 0, skill: 0, assistant, tool, total,
+      system: 16000, tools: 12000, user, inject: 0, skill: 0, assistant, tool, img, imgCount: img ? 1 : 0, total,
       output: 280, cacheRead: Math.round(total * 0.7), prompt: total + 300,
     })
   }
   return out
+}
+
+/** 详情卡图例短名（手机窄屏防截断；仅用于趋势详情卡） */
+const DETAIL_SHORT: Record<string, string> = {
+  system: '系统', skill: '技能', inject: '世界书', profile: '资料', summary: '总结',
+  tools: '工具定义', user: '用户', assistant: '助手', tool: '结果', img: '图片',
 }
 
 type DataState = {
@@ -379,7 +387,7 @@ export function App() {
     // 该轮步数：取聚合记录自带的 stepCount（连续段内精确计数；直接 filter 全表会把压缩前后的同名轮串起来算多）
     const agg = displayRequests.find((x) => x.seq === selected)
     const turnSteps = agg && agg.stepCount !== undefined ? agg.stepCount : 0
-    return { r, usage, turnSteps }
+    return { r, usage, turnSteps, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
   }, [selected, requests, state.messages, displayRequests])
 
   async function openSection(cat: string, label: string) {
@@ -657,13 +665,25 @@ export function App() {
           <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 8, fontSize: 11.5, lineHeight: 1.9 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontWeight: 600 }}>{granularity === 'step' ? `第 ${selectedInfo.r.turn} 轮 · 第 ${selectedInfo.r.step} 步` : (selectedInfo.turnSteps > 1 ? `第 ${selectedInfo.r.turn} 轮 · 共 ${selectedInfo.turnSteps} 步` : `第 ${selectedInfo.r.turn} 轮`)}</span>
-              <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span>
+              <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span><span style={{ opacity: 0.7 }}>≈{fmtTok(selectedInfo.r.total)}</span>
               <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setSelected(null)}>✕</button>
             </div>
-            <div style={{ opacity: 0.9 }}>组成 ≈{fmtTok(selectedInfo.r.total)}：系统 {fmtTok(selectedInfo.r.system)} · 技能 {fmtTok(selectedInfo.r.skill)} · 世界书 {fmtTok(selectedInfo.r.inject)} · 工具 {fmtTok(selectedInfo.r.tools)} · 用户 {fmtTok(selectedInfo.r.user)} · 助手 {fmtTok(selectedInfo.r.assistant)} · 结果 {fmtTok(selectedInfo.r.tool)}</div>
+                        <div style={{ marginTop: 8 }}>
+              <StackedBar parts={selectedInfo.parts} hoverKey={hoverCat} onHoverKey={setHoverCat} />
+            </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '4px 10px', marginTop: 6 }}>
+              {selectedInfo.parts.map((p) => (
+                <span key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', minWidth: 0 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: 4, background: p.color, flex: 'none' }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{DETAIL_SHORT[p.key] || t('cat.' + p.key)}</span>
+                  <b style={{ fontWeight: 600 }}>≈{fmtTok(p.value)}</b>
+                  <span style={{ opacity: 0.55 }}>{selectedInfo.r.total > 0 ? Math.round((p.value / selectedInfo.r.total) * 100) : 0}%</span>
+                </span>
+              ))}
+            </div>
             {selectedInfo.usage ? (
               <div style={{ opacity: 0.9 }}>本轮用量：输入 {fmtTok(selectedInfo.usage.input)} · 输出 {fmtTok(selectedInfo.usage.output)} · 缓存 {fmtTok(selectedInfo.usage.cached)}（{Math.round(selectedInfo.usage.cached / Math.max(1, selectedInfo.usage.input) * 100)}%）· 等待 {(selectedInfo.usage.waitMs / 1000).toFixed(1)}s · 生成 {(selectedInfo.usage.outMs / 1000).toFixed(1)}s</div>
-            ) : null}
+            ) : (<div style={{ opacity: 0.55, fontSize: 11 }}>本轮用量：待该轮完成后显示</div>)}
           </div>
         ) : (
           <div style={{ marginTop: 6, fontSize: 11, opacity: 0.5 }}>点柱子查看该轮详情</div>
