@@ -63,7 +63,7 @@ var rawCache = { key: "", at: 0, data: null };
 var UI_CTX = null;      // Screen(ctx) 时注入：ctx.callTool 工具通道
 var LAST_KEY = "";      // 最近一次解析的会话 key（切会话时清缓存）
 
-function estTok(chars) { return Math.ceil((chars || 0) / 4); }
+function estTok(chars) { return Math.ceil((chars || 0) / 2); }
 /** 会话的官方 usage 轮次（chatmsg 去重、按时间升序；每轮 inputDelta = 该轮真实输入总量的增量） */
 async function usageRounds(key) {
   var msgs = await readJsonl("chatmsg-", 3);
@@ -386,17 +386,13 @@ async function apiSummary(keyIn) {
     tool: estTok((charsByKind.TOOL_CALL || 0) + (charsByKind.TOOL_RESULT || 0))
   };
   current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
-  // 锚定：六段切分保持估算，总量校准到官方 input 口径（照上游 anchoredParts 思路）
+  // 上限保护：估算总量超过 96 万（1M 安全线）时按比例压缩
   try {
-    var _rounds = await usageRounds(key);
-    if (_rounds.length) {
-      var _t = _rounds[_rounds.length - 1].inputDelta;
-      if (anchorTo(current, ["system", "tools", "user", "inject", "skill", "profile", "summary", "assistant", "tool"], _t)) {
-        current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
-        current.anchored = true;
-      }
+    if (current.total > 960000) {
+      anchorTo(current, ["system", "tools", "user", "inject", "skill", "profile", "summary", "assistant", "tool"], 960000);
+      current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
     }
-  } catch (eA) { /* 锚定失败保持估算值 */ }
+  } catch (eA) { /* 忽略 */ }
   return {
     ok: true,
     session: key,
@@ -413,7 +409,6 @@ async function apiSummary(keyIn) {
 async function apiTimeline(keyIn) {
   var key = keyIn || await latestKey();
   var snaps = await readJsonl("snapshots-", 3);
-  var rounds = await usageRounds(key);
   var filtered = [];
   for (var i = 0; i < snaps.length; i++) {
     if (!key || snaps[i].session === key) filtered.push(snaps[i]);
@@ -481,17 +476,10 @@ async function apiTimeline(keyIn) {
       historyChars: r.historyChars || 0
     };
     rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
-    // 锚定：该轮各段按比例缩放到官方 input 口径（估算只决定切分）
-    if (rounds.length) {
-      var _bestD = Infinity, _rTarget = 0;
-      for (var _ri = 0; _ri < rounds.length; _ri++) {
-        var _d = Math.abs((rounds[_ri].sentAt || 0) - (r.atMs || 0));
-        if (_d < _bestD) { _bestD = _d; _rTarget = rounds[_ri].inputDelta; }
-      }
-      if (_bestD > 15 * 60 * 1000) _rTarget = 0;
-      if (_rTarget > 0 && rec.total > 0 && anchorTo(rec, ["system", "tools", "user", "inject", "skill", "summary", "assistant", "tool"], _rTarget)) {
-        rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
-      }
+    // 上限保护：单轮估算超过 96 万时按比例压缩
+    if (rec.total > 960000) {
+      anchorTo(rec, ["system", "tools", "user", "inject", "skill", "summary", "assistant", "tool"], 960000);
+      rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
     }
     out.push(rec);
   }
