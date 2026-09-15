@@ -288,7 +288,16 @@ export function App() {
   }
 
   async function expandItem(idx: number) {
-    if (browser.expanded[idx] !== undefined || browser.expanding === idx) return
+    // 已展开 → 收起（toggle）
+    if (browser.expanded[idx] !== undefined) {
+      setBrowser((b) => {
+        const ex = { ...b.expanded }
+        delete ex[idx]
+        return { ...b, expanded: ex, expanding: null }
+      })
+      return
+    }
+    if (browser.expanding === idx) return
     setBrowser((b) => ({ ...b, expanding: idx }))
     const item = await fetchRawItem(idx)
     setBrowser((b) => ({ ...b, expanding: null, expanded: item && item.ok && item.content !== undefined ? { ...b.expanded, [idx]: item.content } : b.expanded }))
