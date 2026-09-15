@@ -462,6 +462,23 @@ export function App() {
 
       <div className="lc-card">
         <div className="lc-card-title">
+          <span className="lc-card-title-text">{t('stats.title')}</span>
+        </div>
+        <Donut segments={segments} centerTop={'≈' + fmtTok(totalTok)} centerSub={t('overview.estimate')} hoverKey={hoverCat} onHoverKey={setHoverCat} />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginTop: 10, fontSize: 11.5 }}>
+          {segments.filter((s) => s.value > 0).map((s) => (
+            <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 4, background: s.color, flex: 'none' }} />
+              <span>{t('cat.' + s.key)}</span>
+              <b style={{ fontWeight: 600 }}>≈{fmtTok(s.value)}</b>
+              <span style={{ opacity: 0.55 }}>{totalTok > 0 ? Math.round((s.value / totalTok) * 100) : 0}%</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="lc-card">
+        <div className="lc-card-title">
           <span className="lc-card-title-text">{t('overview.title')}</span>
           <span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.7 }}>≈{fmtTok(totalTok)} / 1.0M · {Math.round(totalTok / 1e6 * 100)}%已用</span>
         </div>
@@ -477,41 +494,6 @@ export function App() {
           <div style={{ fontSize: 10, opacity: 0.6, marginTop: 6, textAlign: 'center' }}>图片附件 {state.imgAtt.count} 张 ≈{state.imgAtt.tokens} tokens（按官方图片计费公式估算）</div>
         ) : null}
       </div>
-      <div className="lc-card">
-        <div className="lc-card-title">
-          <span className="lc-card-title-text">耗时统计</span>
-          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>活跃时长构成</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <Donut
-            segments={[
-              { key: 'twait', color: '#f59e0b', value: stats.waitSum },
-              { key: 'tgen', color: '#3b82f6', value: stats.outSum },
-              { key: 'trest', color: '#94a3b8', value: stats.restMs },
-            ].filter((sg) => sg.value > 0)}
-            centerTop={fmtDur(stats.activeMs)}
-            centerSub="活跃时长"
-            hoverKey={hoverTiming}
-            onHoverKey={setHoverTiming}
-          />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, minWidth: 150, flex: 1 }}>
-            {[
-              { key: 'twait', color: '#f59e0b', label: '模型等待', v: stats.waitSum },
-              { key: 'tgen', color: '#3b82f6', label: '模型生成', v: stats.outSum },
-              { key: 'trest', color: '#94a3b8', label: '工具与开销', v: stats.restMs },
-            ].map((row) => (
-              <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: hoverTiming && hoverTiming !== row.key ? 0.55 : 1 }} onMouseEnter={() => setHoverTiming(row.key)} onMouseLeave={() => setHoverTiming(null)}>
-                <span style={{ width: 8, height: 8, borderRadius: 2, background: row.color, display: 'inline-block' }} />
-                <span style={{ opacity: 0.8 }}>{row.label}</span>
-                <b style={{ marginLeft: 'auto' }}>{fmtDur(row.v)}</b>
-                <span style={{ opacity: 0.5, width: 36, textAlign: 'right' }}>{stats.activeMs > 0 ? Math.round((row.v / stats.activeMs) * 100) : 0}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-
       <div className="lc-card">
         <div className="lc-card-title">
           <span className="lc-card-title-text">上下文浏览器</span>
@@ -572,20 +554,38 @@ export function App() {
 
       <div className="lc-card">
         <div className="lc-card-title">
-          <span className="lc-card-title-text">{t('stats.title')}</span>
+          <span className="lc-card-title-text">耗时统计</span>
+          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>活跃时长构成</span>
         </div>
-        <Donut segments={segments} centerTop={'≈' + fmtTok(totalTok)} centerSub={t('overview.estimate')} hoverKey={hoverCat} onHoverKey={setHoverCat} />
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginTop: 10, fontSize: 11.5 }}>
-          {segments.filter((s) => s.value > 0).map((s) => (
-            <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 7, height: 7, borderRadius: 4, background: s.color, flex: 'none' }} />
-              <span>{t('cat.' + s.key)}</span>
-              <b style={{ fontWeight: 600 }}>≈{fmtTok(s.value)}</b>
-              <span style={{ opacity: 0.55 }}>{totalTok > 0 ? Math.round((s.value / totalTok) * 100) : 0}%</span>
-            </span>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <Donut
+            segments={[
+              { key: 'twait', color: '#f59e0b', value: stats.waitSum },
+              { key: 'tgen', color: '#3b82f6', value: stats.outSum },
+              { key: 'trest', color: '#94a3b8', value: stats.restMs },
+            ].filter((sg) => sg.value > 0)}
+            centerTop={fmtDur(stats.activeMs)}
+            centerSub="活跃时长"
+            hoverKey={hoverTiming}
+            onHoverKey={setHoverTiming}
+          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, minWidth: 150, flex: 1 }}>
+            {[
+              { key: 'twait', color: '#f59e0b', label: '模型等待', v: stats.waitSum },
+              { key: 'tgen', color: '#3b82f6', label: '模型生成', v: stats.outSum },
+              { key: 'trest', color: '#94a3b8', label: '工具与开销', v: stats.restMs },
+            ].map((row) => (
+              <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: hoverTiming && hoverTiming !== row.key ? 0.55 : 1 }} onMouseEnter={() => setHoverTiming(row.key)} onMouseLeave={() => setHoverTiming(null)}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: row.color, display: 'inline-block' }} />
+                <span style={{ opacity: 0.8 }}>{row.label}</span>
+                <b style={{ marginLeft: 'auto' }}>{fmtDur(row.v)}</b>
+                <span style={{ opacity: 0.5, width: 36, textAlign: 'right' }}>{stats.activeMs > 0 ? Math.round((row.v / stats.activeMs) * 100) : 0}%</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
+
 
       <div className="lc-card">
         <div className="lc-card-title">
