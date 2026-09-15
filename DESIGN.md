@@ -1,0 +1,437 @@
+# 上下文仪表盘（Operit ToolPkg）· 完整设计与重建指南
+
+> 版本：2026-09-16 · 适用于 Operit（Android）ToolPkg 插件系统
+> 上游参考：bowenliang123/dsh-context（Apache-2.0，DeepSeek Harness 插件，本项目的设计蓝本）
+> 本文档目标：让任何 AI 依据本文即可从零重建整个插件（采集层 + 数据层 + UI 层 + 前端页面）。
+
+---
+
+## 0. 项目概述
+
+**它是什么**：一个 Operit 平台插件，把「每一轮实际发给大模型的完整提示词」逐字捕获到本地文件，并以可视化仪表盘呈现——统计、Token 构成、上下文浏览器、趋势、事件、文件活动、耗时拆分、费用估算。
+
+**一句话架构**：
+
+```
+Operit 对话流程
+   │  prompt_finalize 钩子（发模型前一刻）      chat_message 钩子（消息完成时）
+   ▼                                          ▼
+main.js 落盘 raw_<会话>.json / snapshots / chatmsg  （全部本地文件，不联网）
+   │
+   ▼
+侧边栏「上下文仪表盘」→ Compose UI → WebView 加载 index.single.html（React）
+   │  window.CtxProbe.api() 桥
+   ▼
+index.ui.js 读文件、聚合、计算 → JSON 返回 → React 渲染
+```
+
+**仓库结构**（开源发布形态）：
+
+```
+operit-context-dashboard/
+├── LICENSE                    # Apache-2.0（含上游版权声明）
+├── README.md                  # 功能 / 原理 / 安装 / 构建 / 致谢
+├── THIRD_PARTY_NOTICES.md     # dsh-context(Apache-2.0) + DeepSeek 主题(MIT) 声明
+├── toolpkg/                   # Operit 插件本体（可直接安装）
+│   ├── manifest.json
+│   └── dist/
+│       ├── main.js            # 采集层（钩子 + 落盘）
+│       └── ui/dashboard/index.ui.js   # UI 桥层（读文件 + 计算 + CtxProbe）
+├── web/                       # 前端源码（React + Vite + TS）
+│   └── src/ …                 # 组件、数据桥、样式
+└── assets/index.single.html   # 构建产物（单文件页面，WebView 热加载用）
+```
+
+---
+
+## 1. 运行环境与技术栈
+
+| 层 | 运行位置 | 技术 |
+|---|---|---|
+| 采集层 main.js | Operit ToolPkg main 上下文（QuickJS） | ES5 风格 JS，`ToolPkg.registerPromptFinalizeHook` / `registerChatMessageHook`，`Tools.Files` 读写 |
+| UI 桥层 index.ui.js | ToolPkg UI 上下文（compose_dsl runtime） | ES5 风格 JS，`WebViewController` + `addJavascriptInterface("CtxProbe")` |
+| 页面 index.single.html | WebView（file:// 加载） | React 18 + Vite + TypeScript，构建后单文件内联 |
+| 构建链 | 开发机（Node.js） | `vite build` → `node inline.mjs`（把 JS/CSS 内联进单个 HTML） |
+
+**关键文件路径（设备上）**：
+
+- 插件部署目录：`/sdcard/Android/data/com.ai.assistance.operit/files/packages/com.operit.prompt_viewer_ui.toolpkg`
+- 数据目录：`/sdcard/Download/Operit/prompt_viewer/`
+- 页面热更目标：`/sdcard/Download/Operit/projects/dsh-context-port/preview/index.single.html`
+
+---
+
+## 2. 数据层（重建的基础，最重要）
+
+### 2.1 文件清单（均在数据目录下）
+
+| 文件 | 写入方 | 内容 | 保留策略 |
+|---|---|---|---|
+| `raw_<key>.json` | prompt_finalize 钩子 | 该会话**最新一次**发给模型的完整 payload（逐字，覆盖写） | 环形保留最近 100 个会话 |
+| `meta_<key>.json` | 同上 | 捕获时间 / 预览 / 行数等轻量元信息 | 同上 |
+| `index.json` | 同上 | 会话索引数组，最新在前 | 同上（随会话删除同步） |
+| `snapshots-YYYYMMDD.jsonl` | 同上（仅 `stage=send_to_model`） | 每轮一行轻量快照（字符构成） | 按天 14 天 |
+| `chatmsg-YYYYMMDD.jsonl` | chat_message 钩子 | 每条**完成态**消息一行（usage/timing） | 按天 14 天 |
+| `ui_bridge-YYYYMMDD.jsonl` | UI 桥层 | 桥调用日志（调试用） | 按天 14 天 |
+
+`<key>` = chatId 前 8 位（例：`0449d90e`）；同会话的文件互相覆盖/追加，互不干扰。
+
+### 2.2 核心数据结构（字段级）
+
+**raw_<key>.json**（即 prompt_finalize 的 payload，原文结构由 Operit 决定，关键字段）：
+
+```jsonc
+{
+  "preparedHistory": [            // 逐字的历史数组（核心！）
+    { "kind": "SYSTEM",   "content": "……" },
+    { "kind": "USER",     "content": "……" },
+    { "kind": "ASSISTANT","content": "……" },
+    { "kind": "TOOL_CALL","content": "……" },
+    { "kind": "TOOL_RESULT","content": "……" },
+    { "kind": "SUMMARY",  "content": "……" }
+  ],
+  "availableTools": [ … ],        // 工具定义数组（JSON.stringify 后计长度）
+  "metadata": { "activePrompt": { "name": "…" } },
+  "stage": "before_send_to_model"
+}
+```
+
+**index.json**：`[{ "key", "chatId", "capturedAt", "capturedAtMs", "preview", "chars", "lines" }, …]`（最新在前，超 100 删尾）
+
+**snapshots-<日期>.jsonl**（每行一个 JSON）：
+
+```jsonc
+{
+  "session": "0449d90e",
+  "atMs": 1789448058277,           // 捕获时间戳
+  "stage": "before_send_to_model",
+  "charsByKind": { "SYSTEM":13436, "USER":5542, "ASSISTANT":343257, "TOOL_CALL":…, "TOOL_RESULT":480348, "SUMMARY":… },
+  "countByKind": { "USER": 5, … },
+  "historyCount": 197,
+  "historyChars": 653444,
+  "toolsChars": 11270,
+  "sys": { "wb": 0, "sk": 8813, "up": 938 }   // SYSTEM 内世界书/技能/资料字符数（新快照自带）
+}
+```
+
+**chatmsg-<日期>.jsonl**（每行一条完成消息）：
+
+```jsonc
+{
+  "at":"…","atMs":…,
+  "session":"0449d90e","chatId":"…",
+  "sender":"ai","roleName":"Viya",
+  "contentLen":68528,
+  "inputTokens":4566737,        // 该消息期间全部 API 往返的输入合计（非单次！见坑 §7）
+  "outputTokens":21266,"cachedInputTokens":4540672,
+  "provider":"…","modelName":"deepseek-flash",
+  "sentAt":1789445941448,"completedAt":…,
+  "waitMs":…,"outMs":…,
+  "done": true
+}
+```
+
+### 2.3 数据治理规则
+
+- **机会式执行**：所有清理在「每次捕获写入时」顺手做，不用定时器。
+- 会话类（raw/meta/index）：环形保留 **100** 个会话，被挤出者连同文件一起删。
+- 日志类（snapshots/chatmsg/ui_bridge）：文件名含日期，写入时清理 **14 天**前的文件。
+- 首次运行做一次「索引外孤儿文件」对齐清理。
+
+---
+
+## 3. 采集层（main.js）实现要点
+
+### 3.1 钩子注册（入口）
+
+```js
+function registerToolPkg() {
+  // 1) 注册侧边栏「上下文仪表盘」UI 路由（指向 dist/ui/dashboard/index.ui.js）
+  // 2) 注册提示词定稿钩子 —— 拿「模型真正看到的东西」
+  ToolPkg.registerPromptFinalizeHook({ id: "prompt_snapshot_full", function: onPromptFinalize });
+  // 3) 注册消息事件钩子 —— 拿 token/timing 数据
+  ToolPkg.registerChatMessageHook({ id: "pvm_chat_message", function: onChatMessage });
+  return true;
+}
+exports.registerToolPkg = registerToolPkg;
+exports.onPromptFinalize = onPromptFinalize;   // 钩子函数必须导出，否则注册被拒
+exports.onChatMessage = onChatMessage;
+```
+
+### 3.2 onPromptFinalize（每轮落盘）
+
+1. 取 `input.eventPayload` 为 payload；
+2. `JSON.stringify` 后做**超长行折断**（`chunkLongLines`，把超长行按固定宽度插入真换行，防止下游单行读取超限）——**约定：UI 侧解析前必须去掉真换行**（JSON 字符串内部的换行本来就是 `\n` 两字符，去真换行不改变任何值）；
+3. 写 `raw_<key>.json` + `meta_<key>.json`；
+4. 更新 `index.json`：本会话挪到最前，超 100 删尾并同步删文件；
+5. 仅当 `stage` 含 `send_to_model` 时，追加一行快照到 `snapshots-<日期>.jsonl`（从 payload 统计各 kind 字符数、toolsChars、historyCount、sys 拆分）；
+6. 顺手执行数据治理清理；
+7. **绝不修改提示词本身**（钩子返回 undefined）。
+
+### 3.3 onChatMessage（消息完成时）
+
+- 仅处理 `completedAt > 0`（完成态）的事件，**不做高频写盘**（流式中间态只留内存）；
+- 去重键：`chatId|sentAt|contentLen|d`；
+- 追加一行到 `chatmsg-<日期>.jsonl`（字段见 §2.2；usage 用 `inputTokens/outputTokens/cachedInputTokens`，timing 用 `waitDurationMs/outputDurationMs`）。
+
+### 3.4 输出纪律
+
+- 不清洗、不截断、不重排；raw 里 payload 是什么，文件里就是什么。
+
+---
+
+## 4. UI 桥层（dist/ui/dashboard/index.ui.js）实现要点
+
+### 4.1 职责
+
+1. 用 `WebViewController` 创建 WebView，加载 `preview/index.single.html`；
+2. 注入 JS 接口：
+
+```js
+controller.addJavascriptInterface("CtxProbe", {
+  report: async (payload) => { /* 写 ui_bridge 日志 */ },
+  ping:   () => JSON.stringify({ from:"host", … }),
+  api:    async (payloadJson) => {
+    // 单参数协议（Android 桥接多参数会被合并）：{"m":"summary","section":…}
+    const req = JSON.parse(payloadJson);
+    const out = await dispatch(req);       // 见 4.2
+    return JSON.stringify(out);
+  }
+});
+```
+
+3. 页面侧调用（前端 `data/bridge.ts`）：
+
+```ts
+const r = await (window as any).CtxProbe.api(JSON.stringify({ m: 'summary', ...extra }));
+return JSON.parse(r);
+```
+
+### 4.2 桥方法（dispatch 分支）
+
+| method | 作用 | 返回 |
+|---|---|---|
+| `summary` | 当前会话概览 + 当前上下文构成 | `{ok, session, cardName, current:{system,tools,user,inject,skill,profile,summary,assistant,tool,img?,total}, counts, toolsCount, worldbook, imgAttachments:{count,tokens}, historyCount}` |
+| `timeline` | 逐轮上下文构成（趋势图数据） | `{ok, items:[{seq,turn,step,t,system,tools,user,inject,skill,summary,assistant,tool,total,historyCount}]}` |
+| `messages` | 当前会话消息级 usage 列表 | `{ok, items:[{t,sentAt,input,output,cached,waitMs,outMs,roleName,model}]}` |
+| `events` | 上下文事件（压缩点/模型切换） | `{ok, items:[…]}` |
+| `fileActivity` | 文件活动聚合 | `{ok, items:[…]}` |
+| `toolUsage` | 工具调用统计 | `{ok, items:[…]}` |
+| `rawSection` / `rawItem` | 上下文浏览器：分类列表 / 条目全文 | `{ok, kind, items/content, …}` |
+| `todayMessages` | 跨会话「今天」的分组数据（今日花费） | `{ok, groups:[{session, base:{input,output,cached}, items:[…]}]}` |
+
+### 4.3 关键算法（全部在前端或桥层实现）
+
+**① estTok（估算，中文保守档）**：`tokens ≈ chars × 0.5`（即 ceil(chars/2)）。历史教训：早期用 /4 导致中文场景低估约 3 倍。
+
+**② 上限保护**：任何构成总量估算值 > 960,000 时，按比例压缩到 960,000（`anchorTo`，1M 安全线）。
+
+**③ 峰谷判定（DeepSeek 定价规则）**：
+
+```js
+cfg = { peaks: [{start:'09:00',end:'12:00'},{start:'14:00',end:'18:00'}], weekdaysOnly: true }
+isOffpeakAt(cfg, d):
+  if (weekdaysOnly && 周末) return true      // 周末全天谷时
+  return !peaks.some(p => 时间在 p 内)        // 工作日：非峰即谷
+// 支持跨零点窗口（st>en 时判断 cur>=st || cur<en）
+```
+
+**④ 会话费用（delta 算法）**：遍历消息（升序），逐条取增量并计费：
+
+```js
+dIn  = cur.input  >= last.input  ? cur.input  - last.input  : cur.input   // 处理重置
+dOut = cur.output >= last.output ? cur.output - last.output : cur.output
+dCached = cur.cached >= last.cached ? cur.cached - last.cached : cur.cached
+tier = isOffpeakAt(cfg, new Date(cur.sentAt)) ? price.offpeak : price.peak   // 按消息发生时刻选峰/谷
+cachePart = Math.min(dCached, dIn)
+cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.pout) / 1e6
+```
+
+**⑤ 今日花费（跨会话）**：读最近 3 个 chatmsg 文件 → 按会话分组 → 组内按 sentAt 升序 → `base`=今天 0 点前最后一条的累计值 → 今天的 items（按 sentAt 去重）→ 前端按组跑同样的 delta 求和。
+
+**⑥ 图片 Token 估算（DeepSeek 官方「图片 Token 计算器」忠实移植）**，常量：`PATCH=14, DOWNSAMPLE=3, MAX=384, PAD=4, MIN_PIXELS=147456, MAX_WH_RATIO=8`；关键函数：
+- `imgGridTokens(rows, cols)`：`rows*(cols+1)+2 (+cols+1 if rows odd) (+2 条件项)`；
+- `imgSolveResize(h,w,budget)`：按网格求解最大可容纳缩放（含高图/宽图两个退化分支）；
+- `safeResize`→ `calcResizeInner`（先按 MIN_PIXELS 放大/MAX_WH_RATIO 限宽，再 padding 到 14 网格、超预算逐 1 降 budget 迭代）→ `estimateImageTokens(w,h)` 迭代收敛；
+- 官方验证样本（必须全过）：`2048×1365→313, 800×600→341, 2048×2048→349, 512×512→201, 100×100→117, 1920×1080→369, 400×900→249`；
+- **读图片尺寸**：`Tools.Files.readBinary(path)` → 取 `contentBase64` 前 200000 字符 → 手写 base64→bytes → JPEG 扫 SOF0/1/2/3 段（`FF C0..C3`），PNG 读 IHDR（字节 16-24，大端）；结果缓存；读不到（文件已清理）按 350 估。
+- **附件发现**：在消息 `content` 里正则找 `<attachment … type="image/…" …>`，取 `id="…"` 为文件路径。
+
+**⑦ 世界书/技能/资料提取（从 SYSTEM 文本）**：
+- 世界书：`<worldbook>…</worldbook>` 块 + `<entry name="…">` 名单；
+- 技能段：从「包系统」标题行到 `<worldbook>` / `<user_profile>` / 下一个 `#` 标题之前；
+- 用户资料：`<user_profile>` 块。
+
+**⑧ raw 解析三件套**（重要坑）：文件内容是「折断过的 JSON」——解析顺序：① `text.replace(/\n/g,'')`（去真换行）② `JSON.parse(text, strict:false)`（容错非法控制字符/转义）③ 失败再尝试逐行容错。
+
+**⑨ 快照 sys 回填（历史数据兼容）**：旧快照没有 `sys` 字段时——当全会话 SYSTEM 字符数恒定、且与当前 raw 中 SYSTEM 长度接近（±200）时，从 raw 提取 wb/sk/up 三个拆分值补齐。
+
+---
+
+## 5. 前端（React 页面）实现要点
+
+### 5.1 技术栈与构建
+
+- React 18 + TypeScript + Vite；无 UI 框架，全部手写样式（`lc-*` class 体系）。
+- 构建：`npm run build`（产出 `dist/app.js + style.css + index.html`）→ `node inline.mjs dist`（把 JS/CSS 内联进 `index.single.html` 单文件）。
+- 部署热更：把 `index.single.html` 复制到 `preview/` 目标路径即可（WebView 下次加载生效；页面内「刷新」按钮已接 `location.reload()` 整页重载）。
+
+### 5.2 组件清单（web/src/client/components/）
+
+| 组件 | 用途 | 关键点 |
+|---|---|---|
+| `stackedBar` | 构成条（当前上下文/浏览器 DNA） | 支持 `max`（窗口基准，如 1,000,000）、`free` 剩余空槽、`reserve` 压缩预留斜纹（0.8 处）、hover 联动、最小带宽 |
+| `donut` | 环形图（构成/耗时） | 段→弧换算、中心大字 + 小字、hover 高亮（`hoverKey/onHoverKey`） |
+| `trendChart` | 逐轮堆叠柱趋势 | 自适应 y 轴、步骤/轮次粒度、全量/增量模式、选中/悬停联动 |
+| `legend` | 图例行 | 色点 + 名称 + 值，与条/环共享 hoverKey |
+| `viewkit` | 工具包（t/fmt/catLabel 等注入） | 所有组件通过 make*(kit) 工厂创建 |
+
+### 5.3 页面卡片与顺序（最终验收版）
+
+```
+会话头（角色名 · chatId | 刷新 | 浅色）
+统计行 1：轮次 | 步骤 | 工具调用 | 缓存命中%
+统计行 2：活跃时长 | 模型等待 | 模型生成 | 回答数 | [峰/谷徽章] 估算花费（点击展开价格面板）
+（展开）价格面板：今日花费 | 峰时时段输入 | 每模型峰/谷双价（自动保存）| 恢复默认价
+上下文统计：Donut（总量中各类占比）+ 图例
+当前上下文：≈X / 1.0M · Y%已用 + 1M 窗口条 + 明细九类 + 图片附件行（N 张 ≈X tokens）
+上下文浏览器：10 个可展开分类（系统提示词/技能注入/世界书/用户资料/对话总结/工具定义/用户消息/助手消息/工具结果/全部历史）
+耗时统计：Donut（模型等待/模型生成/工具与开销）+ 图例（时长 + 百分比）
+趋势：堆叠柱（步骤/轮次切换、全量/增量切换）
+世界书 · 本轮注入 / 上下文事件 / 文件活动 / 工具使用
+```
+
+### 5.4 数据加载与状态
+
+- `hasBridge()` 检测 `window.CtxProbe`；无宿主（浏览器预览）时回退 demo 数据。
+- 页面加载时 `Promise.all` 并发拉取：summary / timeline / messages / events / fileActivity / toolUsage / todayMessages。
+- 展开价格面板时不重新拉数据（todayMessages 已随首屏加载）。
+- 展开设置：`selected/hovered/hoverCat/hoverTiming/granularity/mode/browser.expanded`。
+
+### 5.5 localStorage 键
+
+| 键 | 内容 | 说明 |
+|---|---|---|
+| `dsh-prices-v2` | 价格配置 `{peaks:[], weekdaysOnly, models:{name:{peak:{pin,pcache,pout},offpeak:{…}}}}` | 改价自动保存 |
+| `dsh-prefs-v1` | 用户偏好 `{granularity:'step'|'turn', mode:'total'|'delta'}` | 趋势切换持久化 |
+
+### 5.6 交互细节
+
+- 花费格：点击 → 展开/收起价格面板；徽章实时显示当前时段（谷=绿 / 峰=橙）。
+- 工具/消息条目：点击展开 → 再点收起（toggle）。
+- 上下文浏览器条目：点击看全文（`rawItem`），分类头点击展开列表（`rawSection`）。
+- 深浅色：`data-ds-dark-theme` 属性切换 + `dsh_dark` 记忆。
+
+---
+
+## 6. 价格与费用系统
+
+### 6.1 默认价格（DeepSeek 官方，2026-09 核实，单位：元/百万 token）
+
+| 模型 | 时段 | 缓存命中 | 输入(未命中) | 输出 |
+|---|---|---|---|---|
+| deepseek-flash | 峰 | 0.04 | 2 | 8 |
+| deepseek-flash | 谷 | 0.02 | 1 | 4 |
+| deepseek-v4-pro | 峰 | 0.30 | 9 | 27 |
+| deepseek-v4-pro | 谷 | 0.15 | 4.5 | 13.5 |
+
+### 6.2 峰谷规则（官方 2026-09）
+
+- 峰时 = **北京时间工作日 09:00-12:00 与 14:00-18:00**（两个窗口）；
+- 其余时间（含周末全天）为谷时（谷价 = 峰价一半）。
+
+### 6.3 计费口径
+
+- token 来源 = chatmsg 的官方 usage（`inputTokens` 含缓存命中部分，`cachedInputTokens` 为其中命中数）；
+- 费用 = **会话累计**（delta 算法，§4.3-④）与**今日合计**（跨会话，§4.3-⑤）两个口径；
+- 重要语义：**这是估算费用**（token × 价目表），对账以官方账单为准。
+
+---
+
+## 7. 已知坑与对策（复现时务必注意）
+
+1. **`inputTokens` 是"消息级聚合"**：一条 AI 消息的 inputTokens = 该消息期间**全部 API 往返（含多轮工具调用）的输入合计**，不是"单次发送的上下文大小"。**不可**直接用它锚定"当前上下文"（曾产生 1.8M 超限的 bug）。它只适合做计费口径（delta 算法）与"单次量级"的旁证。
+2. **WebView 静态加载**：页面文件是加载那一刻读取的；改版后需整页重载（「刷新」已接 `location.reload()`）。
+3. **临时附件会被清理**：用户消息里的图片路径在 `cleanOnExit/` 下，历史附件文件可能已不存在——图片尺寸读不到时按 350 tokens 估；未来改进方向：采集时把宽高写进快照。
+4. **raw 文件非法转义/控制字符**：`JSON.parse(strict:false)` + **先去真换行**（长行折断是写入时故意做的）。
+5. **快照与消息的对齐**：快照（每轮）与 chatmsg（每条完成消息）数量≈1:1 但不保证严格对应；跨天/压缩后需容错。
+6. **`sys` 拆分字段**：老快照没有 `wb/sk/up` 字段，需要从 raw 回填（见 §4.3-⑨）。
+7. **host 侧 key 别名**：桥方法里的分类 key 与宿主键名可能不一致（例：世界书请求键 `inject`，宿主侧曾叫 `worldbook`——需要别名映射，否则返回空列表）。
+8. **工具定义点击错绑**：浏览器里"工具定义"条目必须用 `tool:<index>` 前缀标记索引，从 availableTools 数组取数（否则会错拿到消息历史）。
+9. **展开/收起 toggle**：展开后再点必须能收起（早期版本只开不收）。
+10. **效率提醒**：部分 Operit 工具（如 `debug_install_toolpkg`）每次调用会返回全量包列表（单次 ~46k 字符 ≈ 23k tokens）——批量合并调用、减少次数，可显著节省上下文。
+11. **时区**：所有"今天/峰谷"判定使用设备本地时区（北京），时间戳存毫秒 epoch。
+12. **数据规模**：会话数据环形保留 100 个、日志 14 天，长期稳定在 ~10-50MB。
+
+---
+
+## 8. 开发与部署流程（Operit 环境）
+
+### 8.1 本地开发目录
+
+```
+/sdcard/Download/Operit/
+├── dev_package/com.operit.prompt_viewer_ui_v2/   # ToolPkg 开发目录（改这里）
+│   ├── manifest.json
+│   └── dist/{main.js, ui/dashboard/index.ui.js}
+└── projects/dsh-context-port/                    # 项目工作区
+    ├── preview/index.single.html                 # 页面热更目标
+    ├── github-repo/                              # 开源仓库本地副本
+    └── DESIGN.md                                 # 本文档
+```
+
+### 8.2 两类部署
+
+| 改动 | 部署方式 | 生效方式 |
+|---|---|---|
+| 采集层 / 桥层（main.js、index.ui.js） | `operit_editor:debug_install_toolpkg`（指向 dev_package 目录） | 重进插件 |
+| 页面（index.single.html） | 复制到 `preview/` 目标 | 页面点「刷新」（整页重载） |
+
+### 8.3 发布到 GitHub
+
+- 仓库副本在 `projects/dsh-context-port/github-repo/`（git 或 GitHub API 上传皆可）；
+- 同步文件：`assets/index.single.html`、`web/src/**`、`toolpkg/dist/**`；
+- 凭证：GitHub token 存于 Operit 的 MCP 配置（`mcp-github-com-missionsquad-mcp-github` 的 `env.GITHUB_PERSONAL_ACCESS_TOKEN`），权限收紧到仅 `repo`。
+
+---
+
+## 9. 从零重建 Checklist（给重建方 AI）
+
+**Stage 1 · 环境就绪**
+- [ ] Operit 安装，确认 ToolPkg 开发能力（SandboxPackage_DEV types 可读）
+- [ ] Node.js 环境（构建 React 页面用）
+
+**Stage 2 · 采集层**
+- [ ] 创建 ToolPkg（manifest + main.js），注册两个钩子（prompt_finalize / chat_message）
+- [ ] 实现落盘：raw/meta/index + snapshots + chatmsg（字段见 §2.2），含超长行折断
+- [ ] 实现数据治理：环形 100 会话 + 日志 14 天 + 孤儿清理
+- [ ] 部署验证：对话几轮后检查数据目录文件生成
+
+**Stage 3 · UI 桥层**
+- [ ] index.ui.js：WebView + CtxProbe 注入 + dispatch（§4.2 全部方法）
+- [ ] 实现全部算法：estTok / 上限保护 / 峰谷 / 费用 delta /今日花费 / 图片公式与读尺寸 / 世界书提取 / raw 解析
+- [ ] 部署验证：桥方法逐个返回正确 JSON
+
+**Stage 4 · 前端页面**
+- [ ] Vite + React + TS 工程；实现组件（stackedBar/donut/trendChart/legend）
+- [ ] 实现卡片页（§5.3 顺序）与交互（§5.6）
+- [ ] localStorage：价格配置 + 偏好持久化
+- [ ] 构建单文件并部署到 preview/，真机验收
+
+**Stage 5 · 打磨与发布**
+- [ ] 回归检查：工具点击/收起、世界书显示、费用单位（¥）、峰谷徽章、图片附件行、1M 窗口条、耗时环
+- [ ] 自检脚本：图片公式七个官方样本全过
+- [ ] 开源合规：LICENSE（Apache-2.0）+ THIRD_PARTY_NOTICES + README 致谢上游（bowenliang123/dsh-context）与 DeepSeek 主题（MIT）
+- [ ] 隐私检查：无个人路径/密钥/用户名残留
+
+---
+
+## 10. 上游致谢与许可
+
+- 设计蓝本：**bowenliang123/dsh-context**（Apache-2.0）—— 环形图/堆叠条/趋势图组件、分类与 i18n 框架、`anchoredParts` 思想、图片 Token 公式等；
+- 主题血统：DeepSeek Harness 客户端主题（MIT）；
+- 本项目以 Apache-2.0 发布，衍生文件均带来源标注。
+
+---
+
+*文档完 · 由薇娅根据 2026-09-14 ~ 16 的完整开发过程整理*
