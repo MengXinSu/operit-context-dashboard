@@ -115,3 +115,17 @@ export async function fetchToolUsage(): Promise<any[] | null> {
   const r = await call<{ ok: boolean; items?: any[] }>('toolUsage')
   return r && r.ok && r.items ? r.items : null
 }
+
+export interface TodaySessionGroup {
+  session: string
+  base: { input: number; output: number; cached: number }
+  items: MessageItem[]
+}
+export interface TodayMessagesData {
+  ok: boolean
+  groups?: TodaySessionGroup[]
+  error?: string
+}
+export async function fetchTodayMessages(): Promise<TodayMessagesData | null> {
+  return call<TodayMessagesData>('todayMessages')
+}
