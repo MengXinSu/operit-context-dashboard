@@ -1,0 +1,10 @@
+/* Operit 移植补丁：页面底色。
+   dsh-context 原版运行在 DSH 宿主里，页面背景由宿主（chat 区域）提供 bg-base；
+   移植到 WebView 后需要自己补上，否则露默认白底（卡片外一圈白边）。
+   兼容深浅两套 token：浅色 = neutral-bluish-00（白），深色 = neutral-bluish-950（近黑）。 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--dsw-alias-bg-base);
+}
