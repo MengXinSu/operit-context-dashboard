@@ -544,7 +544,7 @@ async function apiRawSection(keyIn, section, offset, limit) {
       var tool = tools[t] || {};
       var tChars = 0;
       try { tChars = JSON.stringify(tool).length; } catch (e1) {}
-      tItems.push({ idx: t, name: String(tool.name || "?"), preview: String(tool.description || "").slice(0, 160), chars: tChars });
+      tItems.push({ idx: "tool:" + t, name: String(tool.name || "?"), preview: String(tool.description || "").slice(0, 160), chars: tChars });
     }
     return { ok: true, kind: "list", total: tItems.length, items: tItems.slice(off, off + lim) };
   }
@@ -570,6 +570,16 @@ async function apiRawItem(keyIn, index) {
   var key = keyIn || await latestKey();
   var payload = await loadRaw(key);
   if (!payload) return { ok: false, error: "raw 解析失败" };
+  // 工具条目：index 形如 "tool:3"，从 availableTools 取并格式化为 JSON 文本
+  var idxStr = String(index);
+  if (idxStr.indexOf("tool:") === 0) {
+    var tools = Array.isArray(payload.availableTools) ? payload.availableTools : [];
+    var tool = tools[parseInt(idxStr.slice(5), 10)];
+    if (!tool) return { ok: false, error: "工具索引越界" };
+    var txt = "";
+    try { txt = JSON.stringify(tool, null, 2); } catch (eT) { txt = String(tool); }
+    return { ok: true, kind: "TOOL", toolName: String(tool.name || ""), content: txt };
+  }
   var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory : [];
   var it = hist[index];
   if (!it) return { ok: false, error: "index 越界" };
