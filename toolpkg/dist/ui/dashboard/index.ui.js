@@ -597,16 +597,20 @@ async function apiTimeline(keyIn) {
   var out = [];
   //轮号跨压缩续编（2026-09-15）：countByKind.USER 是「当前留存窗口」内的用户消息数，
   //压缩后窗口重排、该计数骤降（实测 …16→2），直接当轮号会让趋势图回跳/分段。
-  //改为增量映射：增长按差值累加；压缩骤降视为新一轮只 +1；同值视为同轮不同步骤。
+  //改为增量映射：压缩骤降视为新一轮只 +1；同值视为同轮不同步骤。
+  //晚 20:20 修订：增长一律只 +1——系统警告类「虚拟轮」不写快照，按差值累加会跳格；
+  //吞掉的个数记入 skip，前端在该柱标红（表示此处截断/警告）。
   var turnCounter = 0;
   var curStep = 0;
   var lastUserCount = -1;
+  var skipN = 0;
   for (var k = 0; k < merged.length; k++) {
     var r = merged[k];
     var cb = r.charsByKind || {};
     var uc = (r.countByKind && r.countByKind.USER) || 0;
+    skipN = 0;
     if (lastUserCount < 0) { turnCounter = uc > 0 ? uc : 1; curStep = 1; }
-    else if (uc > lastUserCount) { turnCounter += uc - lastUserCount; curStep = 1; }
+    else if (uc > lastUserCount) { skipN = uc - lastUserCount - 1; if (skipN < 0) skipN = 0; turnCounter += 1; curStep = 1; }
     else if (uc < lastUserCount) { if (uc > 0) turnCounter += 1; curStep = 1; }
     else { curStep++; }
     if (uc > 0) lastUserCount = uc;
@@ -619,7 +623,7 @@ async function apiTimeline(keyIn) {
       turn: turnCounter,
       step: curStep,
       t: r.atMs,
-      stage: r.stage,
+      stage: r.stage, skip: skipN,
       system: estTok(Math.max(0, (cb.SYSTEM || 0) - wb0 - sk0 - up0)),
       tools: estTok(r.toolsChars),
       user: estTok(cb.USER),

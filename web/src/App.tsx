@@ -97,6 +97,7 @@ function toRequests(items: any[] | null): RequestRecord[] {
     system: it.system, tools: it.tools, user: it.user, inject: it.inject,
     skill: it.skill, summary: it.summary, assistant: it.assistant, tool: it.tool, total: it.total,
     historyCount: it.historyCount, historyChars: it.historyChars,
+    skip: it.skip,
   }))
 }
 function demoRequests(): RequestRecord[] {

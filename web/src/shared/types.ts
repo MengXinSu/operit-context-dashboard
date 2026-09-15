@@ -540,6 +540,8 @@ export interface RequestRecord {
    * Turn-mode aggregate marker, set by the Client's aggregateByTurn (one bar
    * per turn shows its LAST step's record). The Host never sets it.
    */
+  /** 续编跳变吞掉的虚拟轮数（系统警告/截断类）：宿主 apiTimeline 设置；>0 时趋势图该柱标红。 */
+  skip?: number
   stepCount?: number
   /**
    * Delta-mode signed net change, set by the Client's deltaOf (only present

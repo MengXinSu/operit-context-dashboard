@@ -98,6 +98,8 @@
 .lc-chart[data-catdim='assistant'] .lc-cat-seg[data-cat='assistant'],
 .lc-chart[data-catdim='tool'] .lc-cat-seg[data-cat='tool'] { opacity: 1; filter: brightness(1.18); }
 .lc-bar-marker { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--dsw-alias-state-warn-primary); }
+.lc-bar-skip { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 700; color: #ef4444; }
+.lc-bar-skip-r { transform: translateX(40%); }
 /*
  Turn strip: NEUTRAL zebra fills (inline, see TURN_FILLS) — never the category palette, or the strip reads as a detached bottom segment of the bars.
  */
