@@ -107,6 +107,83 @@ async function readJsonl(prefix, maxFiles) {
   return out;
 }
 
+async function listChatmsgFiles(maxFiles) {
+  var entries = await listPv();
+  var names = [];
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (e && !e.isDirectory && e.name && e.name.indexOf("chatmsg-") === 0 && e.name.slice(-6) === ".jsonl") names.push(e.name);
+  }
+  names.sort();
+  names.reverse();
+  return names.slice(0, maxFiles || 3);
+}
+/** 今日花费数据：最近3个 chatmsg 文件里「今天」的完成态消息，按会话分组；base = 该会话今天之前最后一行的累计值 */
+async function apiTodayMessages() {
+  try {
+    var files = await listChatmsgFiles(3);
+    var all = [];
+    for (var f = 0; f < files.length; f++) {
+      var t = await readText(PV_DIR + "/" + files[f]);
+      if (!t) continue;
+      var lines = t.split("\n");
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i];
+        if (!ln || !ln.trim()) continue;
+        try {
+          var m = JSON.parse(ln);
+          if (m && m.done && m.session) all.push(m);
+        } catch (e2) { /* skip bad line */ }
+      }
+    }
+    var now = new Date();
+    var y = now.getFullYear(), mo = now.getMonth(), day = now.getDate();
+    var isToday = function (ms) {
+      var d = new Date(ms);
+      return d.getFullYear() === y && d.getMonth() === mo && d.getDate() === day;
+    };
+    var bySess = {};
+    for (var j = 0; j < all.length; j++) {
+      var sm = String(all[j].session);
+      if (!bySess[sm]) bySess[sm] = [];
+      bySess[sm].push(all[j]);
+    }
+    var groups = [];
+    var keys = Object.keys(bySess);
+    for (var k = 0; k < keys.length; k++) {
+      var arr = bySess[keys[k]];
+      arr.sort(function (a, b) { return (a.sentAt || 0) - (b.sentAt || 0); });
+      var base = { input: 0, output: 0, cached: 0 };
+      var items = [];
+      var seen = {};
+      for (var q = 0; q < arr.length; q++) {
+        var row = arr[q];
+        if (isToday(row.sentAt)) {
+          var sk = String(row.sentAt);
+          if (seen[sk]) continue;
+          seen[sk] = 1;
+          items.push({
+            t: row.completedAt || row.atMs || 0,
+            sentAt: row.sentAt,
+            input: row.inputTokens || 0,
+            output: row.outputTokens || 0,
+            cached: row.cachedInputTokens || 0,
+            waitMs: row.waitMs || 0,
+            outMs: row.outMs || 0,
+            roleName: row.roleName || "",
+            model: row.modelName || ""
+          });
+        } else {
+          base = { input: row.inputTokens || 0, output: row.outputTokens || 0, cached: row.cachedInputTokens || 0 };
+        }
+      }
+      if (items.length > 0) groups.push({ session: keys[k], base: base, items: items });
+    }
+    return { ok: true, groups: groups };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
 function stripNl(t) { return String(t).replace(/\n/g, ""); }
 
 function extractWorldbook(text) {
@@ -627,6 +704,7 @@ function Screen(ctx) {
           else if (method === "fileActivity") out = await apiFileActivity(key);
           else if (method === "toolUsage") out = await apiToolUsage(key);
           else if (method === "messages") out = await apiMessages(key);
+          else if (method === "todayMessages") out = await apiTodayMessages();
           else if (method === "rawSection") out = await apiRawSection(key, req.section, req.offset, req.limit);
           else if (method === "rawItem") out = await apiRawItem(key, req.index);
           else out = { ok: false, error: "unknown method: " + method };
