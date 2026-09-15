@@ -404,7 +404,7 @@ export function App() {
           <span style={{ opacity: 0.75 }}>世界书 {state.worldbook.entries} 条</span>
         ) : null}
         {state.error ? <span style={{ color: 'var(--dsw-alias-state-error-primary)' }}>{state.error}</span> : null}
-        <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setRefreshN(refreshN + 1)}>刷新</button>
+        <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => { try { location.reload() } catch (e) { setRefreshN(refreshN + 1) } }}>刷新</button>
         <button className="lc-gran-btn" onClick={() => setDark(!dark)}>{dark ? '浅色' : '深色'}</button>
       </div>
 
