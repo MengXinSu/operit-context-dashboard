@@ -16,31 +16,40 @@ import type { ContextEventRecord, RequestRecord } from './shared/types'
 const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结' }
 
 // ── 价格配置（峰谷双价，页面内可编辑，localStorage 持久；单位：人民币元/百万 token）──
+// 官方规则（2026-09 核实）：峰时 = 北京时间工作日 09:00-12:00、14:00-18:00（其余含周末为谷时）
 type PriceTier = { pin: number; pcache: number; pout: number }
 type ModelPrice = { peak: PriceTier; offpeak: PriceTier }
-type PriceConfig = { offpeak: { start: string; end: string }; models: Record<string, ModelPrice> }
+type PriceSpan = { start: string; end: string }
+type PriceConfig = { peaks: PriceSpan[]; weekdaysOnly: boolean; models: Record<string, ModelPrice> }
 const DEFAULT_PRICES: PriceConfig = {
-  offpeak: { start: '00:30', end: '08:30' }, // DeepSeek 错峰时段（北京时间）
+  peaks: [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
+  weekdaysOnly: true,
   models: {
-    'deepseek-flash': { peak: { pin: 2, pcache: 0.2, pout: 3 }, offpeak: { pin: 1, pcache: 0.1, pout: 1.5 } },
-    'deepseek-chat': { peak: { pin: 2, pcache: 0.2, pout: 3 }, offpeak: { pin: 1, pcache: 0.1, pout: 1.5 } },
-    'deepseek-reasoner': { peak: { pin: 4, pcache: 1, pout: 15.8 }, offpeak: { pin: 2, pcache: 0.5, pout: 7.9 } },
+    'deepseek-flash': { peak: { pin: 2, pcache: 0.04, pout: 8 }, offpeak: { pin: 1, pcache: 0.02, pout: 4 } },
+    'deepseek-v4-pro': { peak: { pin: 9, pcache: 0.3, pout: 27 }, offpeak: { pin: 4.5, pcache: 0.15, pout: 13.5 } },
   },
 }
 function loadPriceConfig(): PriceConfig {
   try {
-    const raw = localStorage.getItem('dsh-prices-v1')
-    if (raw) { const j = JSON.parse(raw); if (j && j.models && j.offpeak) return j }
+    const raw = localStorage.getItem('dsh-prices-v2')
+    if (raw) { const j = JSON.parse(raw); if (j && j.models && Array.isArray(j.peaks)) return j }
   } catch (e) { /* fall through */ }
   return JSON.parse(JSON.stringify(DEFAULT_PRICES))
 }
-function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
+function inSpan(d: Date, sp: PriceSpan): boolean {
   const cur = d.getHours() * 60 + d.getMinutes()
-  const [sh, sm] = cfg.offpeak.start.split(':').map(Number)
-  const [eh, em] = cfg.offpeak.end.split(':').map(Number)
+  const [sh, sm] = sp.start.split(':').map(Number)
+  const [eh, em] = sp.end.split(':').map(Number)
   const st = sh * 60 + sm, en = eh * 60 + em
   if (st <= en) return cur >= st && cur < en
   return cur >= st || cur < en // 跨零点
+}
+function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
+  if (cfg.weekdaysOnly) {
+    const wd = d.getDay()
+    if (wd === 0 || wd === 6) return true // 周末全天谷时
+  }
+  return !cfg.peaks.some((sp) => inSpan(d, sp))
 }
 
 const t = (key: string, params?: Record<string, string | number>): string => {
@@ -173,12 +182,15 @@ export function App() {
   const [pricesOpen, setPricesOpen] = useState(false)
   const updatePriceCfg = (next: PriceConfig) => {
     setPriceCfg(next)
-    try { localStorage.setItem('dsh-prices-v1', JSON.stringify(next)) } catch (e) { /* ignore */ }
+    try { localStorage.setItem('dsh-prices-v2', JSON.stringify(next)) } catch (e) { /* ignore */ }
   }
   const setTier = (name: string, key: 'peak' | 'offpeak', field: 'pin' | 'pcache' | 'pout', val: number) => {
     const m = priceCfg.models[name]
     if (!m) return
     updatePriceCfg({ ...priceCfg, models: { ...priceCfg.models, [name]: { ...m, [key]: { ...m[key], [field]: val } } } })
+  }
+  const updPeak = (i: number, k: 'start' | 'end', v: string) => {
+    updatePriceCfg({ ...priceCfg, peaks: priceCfg.peaks.map((sp, j) => (j === i ? { ...sp, [k]: v } : sp)) })
   }
   const offpeakNow = isOffpeakAt(priceCfg, new Date())
   const [browser, setBrowser] = useState<BrowserState>({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
@@ -371,11 +383,16 @@ export function App() {
         <div className="lc-card" style={{ fontSize: 11, lineHeight: 2 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>价格设置（元/百万 token · 自动保存）</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span>谷时时段（北京时间）：</span>
-            <input type="time" value={priceCfg.offpeak.start} onChange={(e) => updatePriceCfg({ ...priceCfg, offpeak: { ...priceCfg.offpeak, start: e.target.value } })} />
-            <span>~</span>
-            <input type="time" value={priceCfg.offpeak.end} onChange={(e) => updatePriceCfg({ ...priceCfg, offpeak: { ...priceCfg.offpeak, end: e.target.value } })} />
-            <span style={{ opacity: 0.6 }}>（其余时间为峰时）</span>
+            <span>峰时时段（北京时间·工作日）：</span>
+            {priceCfg.peaks.map((sp, i) => (
+              <span key={i} style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+                {i > 0 ? <span style={{ opacity: 0.5, marginLeft: 4 }}>与</span> : null}
+                <input type="time" value={sp.start} onChange={(e) => updPeak(i, 'start', e.target.value)} />
+                <span>~</span>
+                <input type="time" value={sp.end} onChange={(e) => updPeak(i, 'end', e.target.value)} />
+              </span>
+            ))}
+            <span style={{ opacity: 0.6 }}>（其余时间含周末为谷时）</span>
           </div>
           {Object.keys(priceCfg.models).map((name) => (
             <div key={name} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
