@@ -57,7 +57,7 @@ var PROBE_HTML = [
 ].join("");
 
 // ===== 数据层：读取 prompt_viewer（summary / timeline / messages） =====
-// 逻辑先在 node 原型（/tmp/dsh-ui-lab/aggregate.mjs）跑通验证，再移植到这里。
+// 逻辑先在 node 原型跑通验证，再移植到这里。
 var PV_DIR = "/sdcard/Download/Operit/prompt_viewer";
 var rawCache = { key: "", at: 0, data: null };
 var UI_CTX = null;      // Screen(ctx) 时注入：ctx.callTool 工具通道
@@ -711,7 +711,7 @@ async function apiRawItem(keyIn, index) {
 function Screen(ctx) {
   UI_CTX = ctx; // 数据层用 ctx.callTool 通道
   var UI = ctx.UI;
-  var controller = ctx.createWebViewController("ctx_probe_webview");
+  var controller = ctx.createWebViewController("dashboard_webview");
 
   function hostLog(obj) {
     try {
@@ -792,7 +792,7 @@ function Screen(ctx) {
     { fillMaxSize: true, onLoad: boot },
     [
       UI.WebView({
-        key: "ctx_probe_webview_node",
+        key: "dashboard_webview_node",
         controller: controller,
         url: DASHBOARD_URL,
         backgroundColor: "#151517",

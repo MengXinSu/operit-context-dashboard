@@ -73,8 +73,8 @@ const Donut = makeDonut(kit)
 const TrendChart = makeTrendChart(kit)
 
 const DEMO_CURRENT = {
-  system: 14906, tools: 11270, user: 1463, inject: 0, skill: 0,
-  assistant: 155975, tool: 432412, total: 615226,
+  system: 16000, tools: 12000, user: 2000, inject: 1000, skill: 1000,
+  assistant: 160000, tool: 400000, total: 592000,
 }
 
 function demoRequests(): RequestRecord[] {
@@ -83,11 +83,11 @@ function demoRequests(): RequestRecord[] {
     const user = 520 + (i % 5) * 80
     const tool = 2400 + (i % 11) * 420
     const assistant = 900 + (i % 9) * 160
-    const total = 14906 + 11270 + user + assistant + tool
+    const total = 16000 + 12000 + user + assistant + tool
     out.push({
       seq: i, turn: Math.ceil(i / 8), step: ((i - 1) % 8) + 1,
       time: Date.now() - (61 - i) * 45000,
-      system: 14906, tools: 11270, user, inject: 0, skill: 0, assistant, tool, total,
+      system: 16000, tools: 12000, user, inject: 0, skill: 0, assistant, tool, total,
       output: 280, cacheRead: Math.round(total * 0.7), prompt: total + 300,
     })
   }

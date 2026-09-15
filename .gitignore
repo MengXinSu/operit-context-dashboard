@@ -3,3 +3,8 @@ web/dist/
 *.log
 .DS_Store
 Thumbs.db
+#本地运行数据（提示词落盘）——防止误提交
+prompt_viewer/
+raw_*.json
+meta_*.json
+*.jsonl

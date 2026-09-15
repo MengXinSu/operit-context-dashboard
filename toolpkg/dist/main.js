@@ -360,7 +360,7 @@ function onPromptFinalize(input) {
 }
 
 // ---------- v2 采集层：每轮快照 + 消息事件（2026-09-15 新增） ----------
-// 数据源与口径经 开发期探针（ctx_probe）实机验证：
+// 数据源与口径经 实机验证：
 //   快照：preparedHistory 按 kind 拆字符（SYSTEM 在历史里；systemPrompt 字段恒为 null）+ availableTools 体量
 //   消息：流式多条 + 完成态带真实 usage；全量记录、带 done 标记，去重规则留给统计层
 // 追加写串行化（写队列）、按天分文件；不碰现有 raw/meta 落盘路径
