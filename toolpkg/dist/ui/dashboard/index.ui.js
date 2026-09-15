@@ -64,6 +64,39 @@ var UI_CTX = null;      // Screen(ctx) 时注入：ctx.callTool 工具通道
 var LAST_KEY = "";      // 最近一次解析的会话 key（切会话时清缓存）
 
 function estTok(chars) { return Math.ceil((chars || 0) / 4); }
+/** 会话的官方 usage 轮次（chatmsg 去重、按时间升序；每轮 inputDelta = 该轮真实输入总量的增量） */
+async function usageRounds(key) {
+  var msgs = await readJsonl("chatmsg-", 3);
+  var arr = [];
+  var seen = {};
+  for (var i = 0; i < msgs.length; i++) {
+    var m = msgs[i];
+    if (!m || !m.done || String(m.session) !== String(key)) continue;
+    var sk = String(m.sentAt);
+    if (seen[sk]) continue;
+    seen[sk] = 1;
+    arr.push(m);
+  }
+  arr.sort(function (a, b) { return (a.sentAt || 0) - (b.sentAt || 0); });
+  var out = [];
+  var lastIn = 0;
+  for (var j = 0; j < arr.length; j++) {
+    var inT = arr[j].inputTokens || 0;
+    var dIn = inT >= lastIn ? inT - lastIn : inT;
+    out.push({ sentAt: arr[j].sentAt || 0, inputDelta: dIn });
+    lastIn = inT;
+  }
+  return out;
+}
+/** 按比例缩放到 target（锚定：估算只决定切分，总量用官方真值 —— 照上游 anchoredParts 思路） */
+function anchorTo(vals, keys, target) {
+  var total = 0;
+  for (var i = 0; i < keys.length; i++) total += vals[keys[i]] || 0;
+  if (!(target > 0) || !(total > 0)) return false;
+  var scale = target / total;
+  for (var j = 0; j < keys.length; j++) vals[keys[j]] = Math.round((vals[keys[j]] || 0) * scale);
+  return true;
+}
 
 async function readText(path) {
   try {
@@ -353,6 +386,17 @@ async function apiSummary(keyIn) {
     tool: estTok((charsByKind.TOOL_CALL || 0) + (charsByKind.TOOL_RESULT || 0))
   };
   current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
+  // 锚定：六段切分保持估算，总量校准到官方 input 口径（照上游 anchoredParts 思路）
+  try {
+    var _rounds = await usageRounds(key);
+    if (_rounds.length) {
+      var _t = _rounds[_rounds.length - 1].inputDelta;
+      if (anchorTo(current, ["system", "tools", "user", "inject", "skill", "profile", "summary", "assistant", "tool"], _t)) {
+        current.total = current.system + current.tools + current.user + current.inject + current.skill + current.profile + current.summary + current.assistant + current.tool;
+        current.anchored = true;
+      }
+    }
+  } catch (eA) { /* 锚定失败保持估算值 */ }
   return {
     ok: true,
     session: key,
@@ -369,6 +413,7 @@ async function apiSummary(keyIn) {
 async function apiTimeline(keyIn) {
   var key = keyIn || await latestKey();
   var snaps = await readJsonl("snapshots-", 3);
+  var rounds = await usageRounds(key);
   var filtered = [];
   for (var i = 0; i < snaps.length; i++) {
     if (!key || snaps[i].session === key) filtered.push(snaps[i]);
@@ -436,6 +481,18 @@ async function apiTimeline(keyIn) {
       historyChars: r.historyChars || 0
     };
     rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
+    // 锚定：该轮各段按比例缩放到官方 input 口径（估算只决定切分）
+    if (rounds.length) {
+      var _bestD = Infinity, _rTarget = 0;
+      for (var _ri = 0; _ri < rounds.length; _ri++) {
+        var _d = Math.abs((rounds[_ri].sentAt || 0) - (r.atMs || 0));
+        if (_d < _bestD) { _bestD = _d; _rTarget = rounds[_ri].inputDelta; }
+      }
+      if (_bestD > 15 * 60 * 1000) _rTarget = 0;
+      if (_rTarget > 0 && rec.total > 0 && anchorTo(rec, ["system", "tools", "user", "inject", "skill", "summary", "assistant", "tool"], _rTarget)) {
+        rec.total = rec.system + rec.tools + rec.user + rec.inject + rec.skill + rec.summary + rec.assistant + rec.tool;
+      }
+    }
     out.push(rec);
   }
   return { ok: true, items: out };
