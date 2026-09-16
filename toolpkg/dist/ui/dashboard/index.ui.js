@@ -821,45 +821,335 @@ async function apiEvents(keyIn) {
   return { ok: true, items: out.slice(-30) };
 }
 
-/** 文件活动：从 raw 的 TOOL_CALL 解析文件读写记录（零新增写入） */
+// ==== FILE_ACTIVITY_V2 BEGIN（Viya 2026-09-16；纯函数段：node 自检脚本按标记提取，勿在段内用宿主 API）====
+// 文件活动 v2：op 级解析器 + 配对 + 聚合（对齐上游 dsh-context shared/fileOps.ts 语义）
+// 实测结论（2026-09-16，prompt_viewer/raw_*.json 全库 45 份）：
+//  - call 参数在 TOOL_CALL 的 <param> 里（XML 实体需解码）；result 线索在 TOOL_RESULT 文本里。
+//  - 结果按【完成顺序】返回（并行调用会乱序）且随机 id 与 call 无关联 → 配对靠内容线索：
+//    ① 路径线索（Content of /path、Directory listing for /path、file-diff path="…" 等）
+//    ② read_file_part 窗口线索（Lines a-b == call 的 start_line-end_line）
+//    ③ FIFO 兜底（stats.fifo 计数；拿不准时不硬错配）
+//  - delta：结果里的 file-diff（Changes: +N -M lines）优先；无则按调用参数估算（对齐上游）。
+var FA2_KIND = {
+  read_file: 'read', read_file_part: 'read', list_files: 'read', file_exists: 'read', file_info: 'read',
+  grep_code: 'search', grep_context: 'search', find_files: 'search',
+  edit_file: 'write', create_file: 'write', write_file: 'write', delete_file: 'write',
+  make_directory: 'write', move_file: 'write', copy_file: 'write', zip_files: 'write', unzip_files: 'write'
+};
+var FA2_PATH_KEYS = { path: 1, old_path: 1, new_path: 1, source_path: 1, destination_path: 1, target_path: 1, file_path: 1, source: 1, destination: 1 };
+
+function fa2Unesc(s) {
+  return String(s).replace(/&(lt|gt|quot|apos|amp|#\d+|#x[0-9a-fA-F]+);/g, function (m, g) {
+    switch (g) { case 'lt': return '<'; case 'gt': return '>'; case 'quot': return '"'; case 'apos': return "'"; case 'amp': return '&'; }
+    if (g.charAt(0) === '#') {
+      try { return String.fromCodePoint(g.charAt(1) === 'x' || g.charAt(1) === 'X' ? parseInt(g.slice(2), 16) : parseInt(g.slice(1), 10)); } catch (e) { }
+    }
+    return m;
+  });
+}
+
+function fa2ToolTail(raw) {
+  var s = String(raw || '');
+  var i = s.lastIndexOf(':');
+  return i > -1 ? s.slice(i + 1) : s;
+}
+
+function fa2LinesOf(s) {
+  if (typeof s !== 'string' || s === '') return 0;
+  var n = 0;
+  for (var i = 0; i < s.length; i++) if (s.charAt(i) === '\n') n++;
+  return s.charAt(s.length - 1) === '\n' ? n : n + 1;
+}
+
+function fa2Dedupe(arr) {
+  var seen = {}, out = [];
+  for (var i = 0; i < arr.length; i++) { var v = arr[i]; if (v && !seen[v]) { seen[v] = 1; out.push(v); } }
+  return out;
+}
+
+/** 解析一条 TOOL_CALL：返回 {idx, tool, kind, params, paths, win} 或 null（非文件工具） */
+function fa2ParseCall(content, idx) {
+  var s = String(content);
+  var h = s.match(/<tool_[A-Za-z0-9]+\s+name="([^"]+)"/);
+  if (!h) return null;
+  var toolRaw = h[1], tool = fa2ToolTail(toolRaw);
+  var params = {};
+  var re = /<param name="([A-Za-z_]+)">([\s\S]*?)<\/param>/g, m;
+  while ((m = re.exec(s)) !== null) params[m[1]] = fa2Unesc(m[2]);
+  // package_proxy 包装（如 extended_file_tools:copy_file）：真实工具名在 tool_name，参数在 params(JSON)
+  if (tool === 'package_proxy' && params.tool_name) {
+    toolRaw = params.tool_name; tool = fa2ToolTail(params.tool_name);
+    var inner = null;
+    try { inner = JSON.parse(params.params || '{}'); } catch (e) { inner = null; }
+    if (inner && typeof inner === 'object') {
+      for (var k in inner) if (!(k in params)) params[k] = inner[k];
+    } else if (params.params) {
+      var lm = params.params.match(/"([A-Za-z_]+)"\s*:\s*"([^"]+)"/g) || [];
+      for (var li = 0; li < lm.length; li++) {
+        var kv = lm[li].match(/"([A-Za-z_]+)"\s*:\s*"([^"]+)"/);
+        if (kv && !(kv[1] in params)) params[kv[1]] = kv[2];
+      }
+    }
+  }
+  var kind = FA2_KIND[tool];
+  if (!kind) return null;
+  var paths = [];
+  for (var pk in FA2_PATH_KEYS) if (typeof params[pk] === 'string' && params[pk]) paths.push(params[pk]);
+  var win = null;
+  if (tool === 'read_file_part') {
+    var sl = parseInt(params.start_line, 10), el = parseInt(params.end_line, 10);
+    if (isFinite(sl) && isFinite(el)) win = { start: sl, end: el };
+  }
+  return { idx: idx, toolRaw: toolRaw, tool: tool, kind: kind, params: params, paths: fa2Dedupe(paths), win: win, used: false, result: null };
+}
+
+/** 解析一条 TOOL_RESULT：返回 {idx, tool, kind, err, hints, win, lineRange, hits, hitFiles, searchFiles, added, removed, hasDelta} 或 null */
+function fa2ParseResult(content, idx) {
+  var s = String(content);
+  var h = s.match(/<tool_result_[A-Za-z0-9]+\s+name="([^"]+)"(?:\s+status="([^"]+)")?/);
+  if (!h) return null;
+  var toolRaw = h[1], tool = fa2ToolTail(toolRaw);
+  var kind = FA2_KIND[tool];
+  if (!kind) return null;
+  var err = h[2] === 'error' || s.indexOf('<error>') > -1;
+  var hints = [], win = null, lineRange = null, hits = 0, hitFiles = 0, searchFiles = null, added = 0, removed = 0, hasDelta = false;
+  // read_file_part 窗口：Part x of y (Lines a-b of c)
+  var w = s.match(/Part (\d+) of (\d+) \(Lines (\d+)-(\d+) of (\d+)\)/);
+  if (w) win = { start: parseInt(w[3], 10), count: parseInt(w[4], 10) - parseInt(w[3], 10) + 1 };
+  // file-diff（edit_file / create_file）：path + Changes: +N -M lines
+  var fd = s.match(/<file-diff path="([^"]*)"/);
+  if (fd) hints.push(fd[1]);
+  var ch = s.match(/Changes: \+(\d+) -(\d+) lines/);
+  if (ch) { added = parseInt(ch[1], 10); removed = parseInt(ch[2], 10); hasDelta = true; }
+  // 路径线索：各工具结果头
+  var co = s.match(/Content of ([^\n:]+?):/); if (co) hints.push(co[1]);
+  var dl = s.match(/Directory listing for ([^\n:]+?):/); if (dl) hints.push(dl[1]);
+  var sp = s.match(/Search Path: ([^\n]+?)(?:\s+Pattern:|$)/m); if (sp) hints.push(sp[1].replace(/\s+$/, ''));
+  var de = s.match(/Successfully deleted ([^\s<]+)/); if (de) hints.push(de[1]);
+  var mkd = s.match(/Successfully created directory ([^\s<]+)/); if (mkd) hints.push(mkd[1]);
+  // 复制类（含包工具 JSON 结果）
+  var jc = s.match(/Successfully copied file ([^\s<]+) to ([^\s<]+)/); if (jc) { hints.push(jc[1]); hints.push(jc[2]); }
+  var jp = s.match(/"path"\s*:\s*"([^"]+)"/); if (jp) hints.push(jp[1]);
+  // 搜索命中：Total Matches: N (in M files) / Found N files
+  var tm = s.match(/Total Matches: (\d+) \(in (\d+) files\)/);
+  if (tm) { hits = parseInt(tm[1], 10); hitFiles = parseInt(tm[2], 10); }
+  else { var ff = s.match(/Found (\d+) files/); if (ff) hits = parseInt(ff[1], 10); }
+  // 搜索逐文件清单（grep: "File: /path" 行；find_files: "- /path" 行）
+  if (kind === 'search') {
+    searchFiles = [];
+    var fre = /(?:^|\n)\s*File: (\/[^\n]+)/g, fm;
+    while ((fm = fre.exec(s)) !== null) searchFiles.push({ path: fm[1].replace(/\s+$/, ''), hits: 0 });
+    if (!searchFiles.length) {
+      var fle = /- (\/[^\n]+)/g, flm;
+      while ((flm = fle.exec(s)) !== null) searchFiles.push({ path: flm[1].replace(/\s+$/, ''), hits: 0 });
+    }
+    // 截断保护：声明的文件数 > 实抓行数 → 清单不完整，弃用（退回 target 行）
+    var declared = hitFiles || hits;
+    if (searchFiles.length && declared && searchFiles.length < declared) searchFiles = null;
+    if (searchFiles && searchFiles.length === 0) searchFiles = null;
+  }
+  // read_file 行号范围（结果正文的 "N| " 前缀）→ 读取窗口 [first, last]
+  if (tool === 'read_file' && !err) {
+    var reN = /(?:^|\n)\s*(\d+)\|/g, mn, first = null, lastN = null, guard = 0;
+    while ((mn = reN.exec(s)) !== null && guard < 200000) {
+      var v = parseInt(mn[1], 10);
+      if (first === null) first = v;
+      lastN = v; guard++;
+    }
+    if (first !== null) lineRange = { start: first, count: lastN - first + 1 };
+  }
+  // error 文本里的路径（配对辅助；保守提取，最多 6 个）
+  if (err) {
+    var pe = /(?:^|[\s:'"(])((?:\/[A-Za-z0-9_.\-]+)+)/g, pm, pn = 0;
+    while ((pm = pe.exec(s)) !== null) { hints.push(pm[1]); pn++; if (pn >= 6) break; }
+  }
+  return { idx: idx, toolRaw: toolRaw, tool: tool, kind: kind, err: err, hints: fa2Dedupe(hints), win: win, lineRange: lineRange, hits: hits, hitFiles: hitFiles, searchFiles: searchFiles, added: added, removed: removed, hasDelta: hasDelta, call: null };
+}
+
+/** 配对：每个 result 找它的 call（路径线索 → 窗口线索 → FIFO 兜底） */
+function fa2Pair(calls, results) {
+  var stats = { calls: calls.length, results: results.length, paired: 0, unpairedResults: 0, unpairedCalls: 0, fifo: 0, hintMatched: 0, winMatched: 0 };
+  var byTool = {};
+  for (var i = 0; i < calls.length; i++) (byTool[calls[i].tool] || (byTool[calls[i].tool] = [])).push(calls[i]);
+  for (var r = 0; r < results.length; r++) {
+    var res = results[r];
+    var cands = byTool[res.tool] || [];
+    var pick = null, how = '';
+    // 1) 路径线索（hints 与 call 的路径参数有交集；多候选取最早）
+    if (res.hints.length) {
+      for (var ci = 0; ci < cands.length && !pick; ci++) {
+        var c = cands[ci];
+        if (c.used) continue;
+        for (var hi = 0; hi < res.hints.length; hi++) {
+          if (c.paths.indexOf(res.hints[hi]) > -1) { pick = c; how = 'hint'; break; }
+        }
+      }
+    }
+    // 2) 窗口线索（read_file_part：start 与 count 完全相等）
+    if (!pick && res.win) {
+      for (var c2 = 0; c2 < cands.length; c2++) {
+        var cc = cands[c2];
+        if (cc.used || !cc.win) continue;
+        if (cc.win.start === res.win.start && (cc.win.end - cc.win.start + 1) === res.win.count) { pick = cc; how = 'win'; break; }
+      }
+    }
+    // 3) FIFO 兜底（最早未配对）
+    if (!pick) {
+      for (var c3 = 0; c3 < cands.length; c3++) { if (!cands[c3].used) { pick = cands[c3]; how = 'fifo'; break; } }
+    }
+    if (pick) {
+      pick.used = true; pick.result = res; res.call = pick; stats.paired++;
+      if (how === 'hint') stats.hintMatched++; else if (how === 'win') stats.winMatched++; else stats.fifo++;
+    } else {
+      res.orphan = true; stats.unpairedResults++;
+    }
+  }
+  for (var k = 0; k < calls.length; k++) if (!calls[k].used) stats.unpairedCalls++;
+  return stats;
+}
+
+/** 文件形态：image（图片扩展名）→ dir（目录目标）→ text */
+function fa2Form(tool, path) {
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path)) return 'image';
+  if (/\/$/.test(path)) return 'dir';
+  if (tool === 'list_files' || tool === 'make_directory') return 'dir';
+  return 'text';
+}
+
+/** 参数估算 delta（结果无 file-diff 时的兜底；对齐上游「从调用参数估算」） */
+function fa2ArgDelta(c, which) {
+  var p = c.params;
+  if (c.tool === 'edit_file') return which === 'added' ? fa2LinesOf(p['new']) : fa2LinesOf(p.old);
+  if (c.tool === 'create_file') return which === 'added' ? fa2LinesOf(p['new']) : 0;
+  if (c.tool === 'write_file') return which === 'added' ? fa2LinesOf(p.content) : 0;
+  return 0;
+}
+
+/** 读取窗口：结果 exact（Lines a-b / 行号范围）优先，参数 est 兜底 */
+function fa2ReadWindow(c, r) {
+  if (r.win) return { start: r.win.start, count: r.win.count };
+  if (r.lineRange) return { start: r.lineRange.start, count: r.lineRange.count };
+  if (c.win) return { count: c.win.end - c.win.start + 1, est: true };
+  return null;
+}
+
+/** 聚合：按路径折叠成 FileEntry + totals（对齐上游 aggregateOps；搜索按命中文件逐行） */
+function fa2Aggregate(calls) {
+  var totals = { read: { files: 0, ops: 0 }, write: { files: 0, ops: 0 }, search: { files: 0, ops: 0 }, image: { files: 0, ops: 0 }, added: 0, removed: 0 };
+  var byPath = {};
+  function addOp(path, op, patternMark) {
+    var entry = byPath[path];
+    if (!entry) {
+      entry = byPath[path] = { path: path, form: fa2Form(op.tool, path), reads: 0, writes: 0, searches: 0, added: 0, removed: 0, errs: 0, ops: [] };
+      if (patternMark) entry.pattern = true;
+    }
+    if (op.kind === 'read') entry.reads++;
+    else if (op.kind === 'write') entry.writes++;
+    else entry.searches++;
+    entry.added += op.added; entry.removed += op.removed;
+    if (op.err) entry.errs++;
+    entry.ops.push(op);
+  }
+  for (var i = 0; i < calls.length; i++) {
+    var c = calls[i], r = c.result;
+    if (!r) continue; // 只折叠 settled（有 result 的）调用
+    var base = { seq: r.idx, kind: c.kind, tool: c.tool, added: 0, removed: 0, err: r.err === true, callIdx: c.idx, resultIdx: r.idx };
+    if (c.kind === 'search') {
+      var pattern = typeof c.params.pattern === 'string' ? c.params.pattern : '';
+      var target = c.paths.length ? c.paths[0] : '';
+      var narrowed = !!target;
+      var files = r.searchFiles;
+      if (files) {
+        // 逐文件行 + target 行（target 与命中文件重复时跳过；对齐上游）
+        var skipTarget = false;
+        for (var sf = 0; sf < files.length; sf++) if (files[sf].path === target) { skipTarget = true; break; }
+        if (target && !skipTarget) {
+          var to = { seq: base.seq, kind: 'search', tool: c.tool, path: target, added: 0, removed: 0, err: base.err, callIdx: base.callIdx, resultIdx: base.resultIdx, hits: r.hits || 0 };
+          if (narrowed && pattern) to.detail = pattern;
+          if (!narrowed) to.pattern = true;
+          addOp(target, to, !narrowed);
+        }
+        for (var fi = 0; fi < files.length; fi++) {
+          var fo = { seq: base.seq, kind: 'search', tool: c.tool, path: files[fi].path, added: 0, removed: 0, err: base.err, callIdx: base.callIdx, resultIdx: base.resultIdx };
+          if (pattern) fo.detail = pattern;
+          if (files[fi].hits > 0) fo.hits = files[fi].hits;
+          addOp(files[fi].path, fo, false);
+        }
+        continue;
+      }
+      if (!target) continue;
+      var so = { seq: base.seq, kind: 'search', tool: c.tool, path: target, added: 0, removed: 0, err: base.err, callIdx: base.callIdx, resultIdx: base.resultIdx };
+      if (narrowed && pattern) so.detail = pattern;
+      if (!narrowed) so.pattern = true;
+      if (r.hits) so.hits = r.hits;
+      addOp(target, so, !narrowed);
+      continue;
+    }
+    var path = c.paths.length ? c.paths[0] : '';
+    if (!path) continue;
+    var op = { seq: base.seq, kind: c.kind, tool: c.tool, path: path, added: 0, removed: 0, err: base.err, callIdx: base.callIdx, resultIdx: base.resultIdx };
+    op.added = r.hasDelta ? r.added : fa2ArgDelta(c, 'added');
+    op.removed = r.hasDelta ? r.removed : fa2ArgDelta(c, 'removed');
+    if (c.kind === 'read') {
+      var rw = fa2ReadWindow(c, r);
+      if (rw) op.read = rw;
+    }
+    addOp(path, op, false);
+  }
+  var entries = [];
+  for (var p in byPath) entries.push(byPath[p]);
+  for (var ei = 0; ei < entries.length; ei++) {
+    var en = entries[ei];
+    en.ops.sort(function (a, b) { return (b.seq || 0) - (a.seq || 0); });
+    if (en.reads > 0) totals.read.files++;
+    if (en.writes > 0) totals.write.files++;
+    if (en.searches > 0) totals.search.files++;
+    if (en.form === 'image') { totals.image.files++; totals.image.ops += en.ops.length; }
+    totals.added += en.added; totals.removed += en.removed;
+    totals.read.ops += en.reads; totals.write.ops += en.writes; totals.search.ops += en.searches;
+  }
+  entries.sort(function (a, b) { return ((b.ops[0] || { seq: 0 }).seq || 0) - ((a.ops[0] || { seq: 0 }).seq || 0); });
+  return { entries: entries, totals: totals };
+}
+
+/** v2 主入口：preparedHistory → {entries, totals, stats, legacyItems} */
+function fa2Compute(hist) {
+  var calls = [], results = [];
+  for (var i = 0; i < hist.length; i++) {
+    var it = hist[i] || {};
+    var k = String(it.kind || '').toUpperCase();
+    var c = String(it.content || '');
+    if (k === 'TOOL_CALL') { var pc = fa2ParseCall(c, i); if (pc) calls.push(pc); }
+    else if (k === 'TOOL_RESULT') { var pr = fa2ParseResult(c, i); if (pr) results.push(pr); }
+  }
+  var stats = fa2Pair(calls, results);
+  var agg = fa2Aggregate(calls);
+  // legacy items（v1 前端兼容：现页面继续可用；W2 切到 entries/totals）
+  var items = [];
+  for (var e = 0; e < agg.entries.length; e++) {
+    var en = agg.entries[e];
+    var toolsSeen = {}, order = [];
+    for (var oi = 0; oi < en.ops.length; oi++) {
+      var tn = en.ops[oi].tool;
+      if (!toolsSeen[tn]) { toolsSeen[tn] = 1; order.push(tn); }
+    }
+    items.push({ path: en.path, reads: en.reads + en.searches, writes: en.writes, count: en.reads + en.searches + en.writes, tools: order.join(' · ') });
+  }
+  items.sort(function (a, b) { return b.count - a.count; });
+  return { entries: agg.entries, totals: agg.totals, stats: stats, legacyItems: items.slice(0, 60) };
+}
+// ==== FILE_ACTIVITY_V2 END ====
+
+/** 文件活动：从 raw 的 TOOL_CALL / TOOL_RESULT 解析文件操作记录（v2：op 级 + 配对 + 聚合；零新增写入） */
 async function apiFileActivity(keyIn) {
   var key = keyIn || await latestKey();
   var payload = await loadRaw(key);
   if (!payload) return { ok: false, error: "raw解析失败" };
   var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory : [];
-  var FILE_TOOLS = { read_file: 1, read_file_part: 1, write_file: 1, edit_file: 1, create_file: 1, delete_file: 1, list_files: 1, make_directory: 1, find_files: 1, file_exists: 1, move_file: 1, copy_file: 1, file_info: 1, unzip_files: 1, zip_files: 1, open_file: 1, share_file: 1, grep_code: 1, grep_context: 1 };
-  var READ_OPS = { read_file: 1, read_file_part: 1, list_files: 1, find_files: 1, file_exists: 1, file_info: 1, grep_code: 1, grep_context: 1 };
-  var PATH_PARAMS = { path: 1, old_path: 1, new_path: 1, source_path: 1, destination: 1, target_path: 1, source: 1, destination_path: 1, file_path: 1 };
-  var byPath = {};
-  for (var i = 0; i < hist.length; i++) {
-    var it = hist[i] || {};
-    if (String(it.kind || "").toUpperCase() !== "TOOL_CALL") continue;
-    var c = String(it.content || "");
-    var nm = c.match(/name="([a-z_]+)"/);
-    if (!nm || !FILE_TOOLS[nm[1]]) continue;
-    var op = nm[1];
-    var re = /<param name="([a-z_]+)">([^<]*)<\/param>/g;
-    var paths = [];
-    var m2;
-    while ((m2 = re.exec(c)) !== null) {
-      if (PATH_PARAMS[m2[1]] && m2[2]) paths.push(m2[2]);
-    }
-    for (var j = 0; j < paths.length; j++) {
-      var p = paths[j];
-      if (!p || p.length > 400) continue;
-      var rec = byPath[p] || (byPath[p] = { path: p, reads: 0, writes: 0, tools: {} });
-      if (READ_OPS[op]) rec.reads++; else rec.writes++;
-      rec.tools[op] = true;
-    }
-  }
-  var out = [];
-  for (var kk in byPath) {
-    var r2 = byPath[kk];
-    out.push({ path: r2.path, reads: r2.reads, writes: r2.writes, count: r2.reads + r2.writes, tools: Object.keys(r2.tools).join(" · ") });
-  }
-  out.sort(function (a, b) { return b.count - a.count; });
-  return { ok: true, total: out.length, items: out.slice(0, 60) };
+  var act = fa2Compute(hist);
+  return { ok: true, total: act.entries.length, items: act.legacyItems, entries: act.entries, totals: act.totals, stats: act.stats };
 }
+
 
 /** 工具使用统计：从 raw 的 TOOL_CALL 聚合各工具调用次数（零新增写入） */
 async function apiToolUsage(keyIn) {
