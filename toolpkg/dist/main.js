@@ -371,6 +371,8 @@ function onPromptFinalize(input) {
     if (stageStr.indexOf("send_to_model") >= 0) {
       try { collectSnapshot(payload); } catch (e1) { log("snapshot collect failed: " + errText(e1)); }
     }
+    // v2(W8):报错门类留档——扫本次装配可见的系统警告，增量写 warnings-YYYYMMDD.jsonl（低频：仅新增时写一行）
+    try { w8CaptureWarns(payload); } catch (eW) { log("warn capture failed: " + errText(eW)); }
   } catch (e) {
     log("capture failed: " + errText(e));
   }
@@ -526,6 +528,133 @@ function collectSnapshot(payload) {
   });
 }
 
+// ==== W8_WARN BEGIN（Viya 2026-09-17；纯函数段：node 自检脚本按标记提取，勿在段内用宿主 API）====
+// 报错门类 · 警告扫描与增量去重（预研 2026-09-17：全库 raw 四会话「警告数 = skip 数」对拍一致）
+// 警告消息形态：kind=USER，content 以 <status type="warning">…</status> 开头（结构锚点判定，勿全文扫）。
+// 两类文案：①「检测到工具调用输出被截断…」=截断类；②「请输出正文内容…」=输出异常类。
+function w8WarnTypeOf(text) {
+  var s = String(text);
+  if (s.indexOf("检测到工具调用输出被截断") >= 0) return "trunc";
+  if (s.indexOf("请输出正文内容") >= 0) return "empty";
+  return "other";
+}
+/** 扫一段历史，返回可见警告 [{idx, type, text}]（text=去标签正文；留档与展示共用同一口径） */
+function w8ScanWarns(hist) {
+  var out = [];
+  try {
+    for (var i = 0; i < hist.length; i++) {
+      var x = hist[i] || {};
+      if (String(x.kind || x.role || "").toUpperCase() !== "USER") continue;
+      var ct = String(x.content === null || x.content === undefined ? "" : x.content);
+      if (!/^<status[^>]*type="warning"[^>]*>/.test(ct)) continue;
+      var text = ct.replace(/^<status[^>]*>/, "").replace(/<\/status>[\s\S]*$/, "").trim();
+      out.push({ idx: i, type: w8WarnTypeOf(text), text: text });
+    }
+  } catch (e) { /* 静默：不影响主流程 */ }
+  return out;
+}
+/** 增量去重（V vs R 自校正）：V=本次可见列表中该文本条数；R=留档中该会话该文本条数；
+ *  返回「本次应新增写入的文本列表」（长度=待写条数，逐文本维度）。
+ *  已知限制：历史警告被压缩清除后再出现同类新警告时，可能因 V≤R 被掩盖而漏记（罕见，接受）。 */
+function w8CountNew(warns, recorded) {
+  var vc = {}, i, t, delta;
+  for (i = 0; i < warns.length; i++) {
+    t = String(warns[i].text);
+    vc[t] = (vc[t] || 0) + 1;
+  }
+  var out = [];
+  for (t in vc) {
+    delta = vc[t] - ((recorded && recorded[t]) || 0);
+    for (i = 0; i < delta; i++) out.push(t);
+  }
+  return out;
+}
+// ==== W8_WARN END ====
+// W8 留档 IO（段外：用宿主 API；文件名 warnings-YYYYMMDD.jsonl，单行追加、读侧对坏行容错）
+var W8_SEEN = null;
+/** 读最近 3 个 warnings-*.jsonl 重建「该会话该文本已记录条数」（进程内缓存；失败按空处理） */
+function w8LoadSeen() {
+  if (W8_SEEN) return Promise.resolve(W8_SEEN);
+  var seen = {};
+  return Tools.Files.list(OUT_DIR, "android").then(function (r) {
+    var entries = (r && r.entries) ? r.entries : [];
+    var names = [];
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i] || {};
+      var nm = str(e.name);
+      if (e.isDirectory || !nm) continue;
+      if (nm.indexOf("warnings-") === 0 && nm.slice(-6) === ".jsonl") names.push(nm);
+    }
+    names.sort();
+    names.reverse();
+    if (names.length > 3) names = names.slice(0, 3);
+    var chain = Promise.resolve();
+    for (var j = 0; j < names.length; j++) {
+      (function (nm2) {
+        chain = chain.then(function () {
+          return Tools.Files.read({ path: OUT_DIR + "/" + nm2, environment: "android" }).then(function (t) {
+            try {
+              if (t && typeof t === "object" && typeof t.content === "string") t = t.content;
+              var lines = str(t).split("\n");
+              for (var k = 0; k < lines.length; k++) {
+                var ln = lines[k];
+                if (!ln || !ln.trim()) continue;
+                try {
+                  var o = JSON.parse(ln);
+                  var s0 = str(o.session), t0 = str(o.text);
+                  if (s0 && t0) {
+                    var g = seen[s0] || (seen[s0] = {});
+                    g[t0] = (g[t0] || 0) + 1;
+                  }
+                } catch (e2) { /* 坏行跳过 */ }
+              }
+            } catch (e3) { /* ignore */ }
+          }).catch(function () { /* 单文件失败不致命 */ });
+        });
+      })(names[j]);
+    }
+    return chain.then(function () { W8_SEEN = seen; return seen; });
+  }).catch(function () { W8_SEEN = seen; return seen; });
+}
+/** 装配时调用：扫本次可见警告 → 增量写留档（挂在写链尾部；无新增零写盘） */
+function w8CaptureWarns(payload) {
+  try {
+    var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory
+      : (Array.isArray(payload.chatHistory) ? payload.chatHistory : []);
+    var warns = w8ScanWarns(hist);
+    if (!warns.length) return;
+    var chatId = str(payload.chatId);
+    var stage = str(payload.stage);
+    writeChain = writeChain.then(function () {
+      return w8LoadSeen().then(function (seen) {
+        var sess = chatId.slice(0, 8);
+        var rec = seen[sess] || (seen[sess] = {});
+        var news = w8CountNew(warns, rec);
+        if (!news.length) return null;
+        var queue = {};
+        for (var i = 0; i < warns.length; i++) {
+          var wI = warns[i];
+          (queue[wI.text] = queue[wI.text] || []).push(wI);
+        }
+        var chain2 = Promise.resolve();
+        for (var j = 0; j < news.length; j++) {
+          (function (t2) {
+            chain2 = chain2.then(function () {
+              var q = queue[t2] || [];
+              var sample = q.shift() || { type: "other", idx: -1 };
+              var obj = { at: nowText(), atMs: Date.now(), session: sess, chatId: chatId, type: sample.type, text: t2, idx: sample.idx, stage: stage };
+              try { ensureV2Dir(); } catch (e0) { /* ignore */ }
+              return Tools.Files.write(OUT_DIR + "/warnings-" + todayKey() + ".jsonl", JSON.stringify(obj) + "\n", true, "android").then(function () {
+                rec[t2] = (rec[t2] || 0) + 1;
+              }).catch(function (e1) { log("warn write failed: " + errText(e1)); });
+            });
+          })(news[j]);
+        }
+        return chain2.then(function () { log("warnings recorded: sess=" + sess + " new=" + news.length); });
+      });
+    }).catch(function (eW2) { log("warn flush failed: " + errText(eW2)); });
+  } catch (e) { log("warn capture failed: " + errText(e)); }
+}
 /** 消息事件（流式快照 + 完成态 usage）。完全相同的事件去重（同 chatId/sentAt/长度/done）。 */
 var lastChatKey = null;
 

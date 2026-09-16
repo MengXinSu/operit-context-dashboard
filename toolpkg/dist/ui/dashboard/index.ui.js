@@ -672,6 +672,28 @@ async function apiTimeline(keyIn) {
     }
     out.push(rec);
   }
+  // W8 跳过明细：留档警告（含已压缩历史）附挂到「捕获它的快照行」（±10s 最近邻；捕获时刻=该次装配）
+  try {
+    var wrAll = await readJsonl("warnings-", 3);
+    var wl = [];
+    for (var wA = 0; wA < wrAll.length; wA++) {
+      var wR = wrAll[wA] || {};
+      if (key && wR.session !== key) continue;
+      var wAt = +wR.atMs || 0;
+      if (wAt) wl.push({ wtype: String(wR.type || "other"), text: String(wR.text || ""), at: String(wR.at || ""), atMs: wAt, idx: +wR.idx || 0 });
+    }
+    for (var wB = 0; wB < wl.length; wB++) {
+      var best = -1, bestD = 1e18;
+      for (var wC = 0; wC < out.length; wC++) {
+        var dD = Math.abs((out[wC].t || 0) - wl[wB].atMs);
+        if (dD < bestD) { bestD = dD; best = wC; }
+      }
+      if (best >= 0 && bestD < 10000) {
+        if (!out[best].skipWarns) out[best].skipWarns = [];
+        out[best].skipWarns.push(wl[wB]);
+      }
+    }
+  } catch (eW4) { /* 留档缺失不致命 */ }
   return { ok: true, items: out };
 }
 
@@ -793,6 +815,31 @@ async function apiSteps(keyIn) {
   return { ok: true, items: out };
 }
 
+// ==== W8_WARN_UI BEGIN（2026-09-17；纯函数段：node 自检脚本按标记提取，勿在段内用宿主 API）====
+// 报错门类 · 警告扫描（与 main.js W8_WARN 段同口径；两侧一致性由 tools/w8_check.js 对拍）
+// 警告消息形态：kind=USER，content 以 <status type="warning">…</status> 开头（结构锚点判定）。
+// 两类文案：①「检测到工具调用输出被截断…」=截断类；②「请输出正文内容…」=输出异常类。
+function w8WarnTypeOfUi(text) {
+  var s = String(text);
+  if (s.indexOf("检测到工具调用输出被截断") >= 0) return "trunc";
+  if (s.indexOf("请输出正文内容") >= 0) return "empty";
+  return "other";
+}
+function w8ScanWarnsUi(hist) {
+  var out = [];
+  try {
+    for (var i = 0; i < hist.length; i++) {
+      var x = hist[i] || {};
+      if (String(x.kind || x.role || "").toUpperCase() !== "USER") continue;
+      var ct = String(x.content === null || x.content === undefined ? "" : x.content);
+      if (!/^<status[^>]*type="warning"[^>]*>/.test(ct)) continue;
+      var text = ct.replace(/^<status[^>]*>/, "").replace(/<\/status>[\s\S]*$/, "").trim();
+      out.push({ idx: i, type: w8WarnTypeOfUi(text), text: text });
+    }
+  } catch (e) { /* 静默：不影响主流程 */ }
+  return out;
+}
+// ==== W8_WARN_UI END ====
 /** 上下文事件：从快照推压缩、从消息事件推模型切换（零新增写入） */
 async function apiEvents(keyIn) {
   var key = keyIn || await latestKey();
@@ -828,7 +875,44 @@ async function apiEvents(keyIn) {
     if (prevModel && mn !== prevModel) out.push({ kind: "model", at: r0.at || "", atMs: r0.atMs || 0, from: prevModel, to: mn });
     prevModel = mn;
   }
-  out.sort(function (a, b) { return (a.atMs || 0) - (b.atMs || 0); });
+  // 3) W8报错门类：当前 raw 里的系统警告（截断类 / 输出异常类；结构锚点判定，带 idx 锚点供点击定位）
+  try {
+    var rawW = await loadRaw(key);
+    var warnList = w8ScanWarnsUi(rawW && Array.isArray(rawW.preparedHistory) ? rawW.preparedHistory : []);
+    if (warnList.length) {
+      // 时间近似：与留档（warnings-*.jsonl，main.js 捕获实录）尾部对齐，取捕获时刻
+      try {
+        var wrRows = await readJsonl("warnings-", 3);
+        var mine = [];
+        for (var wrI = 0; wrI < wrRows.length; wrI++) {
+          if (key && wrRows[wrI].session !== key) continue;
+          mine.push(wrRows[wrI]);
+        }
+        mine.sort(function (a, b) { return (+a.atMs || 0) - (+b.atMs || 0); });
+        var vi = warnList.length - 1, ri = mine.length - 1;
+        while (vi >= 0 && ri >= 0) {
+          if (String(mine[ri].text) === warnList[vi].text) {
+            warnList[vi].at = String(mine[ri].at || "");
+            warnList[vi].atMs = +mine[ri].atMs || 0;
+            vi--; ri--;
+          } else {
+            ri--; // 留档含已压缩历史：跳过对不上的
+          }
+        }
+      } catch (eW2) { /* 留档缺失不致命 */ }
+      for (var wj = 0; wj < warnList.length; wj++) {
+        out.push({ kind: "warn", wtype: warnList[wj].type, text: warnList[wj].text, idx: warnList[wj].idx, at: warnList[wj].at || "", atMs: warnList[wj].atMs || 0 });
+      }
+    }
+  } catch (eW0) { /* raw 读取失败不影响其它事件 */ }
+  // 排序：有时间按时间；无时间的（留档缺失的警告）排最后，避免抢占 slice(-30) 裁剪顺位
+  out.sort(function (a, b) {
+    var am = +a.atMs || 0, bm = +b.atMs || 0;
+    if (!am && !bm) return 0;
+    if (!am) return 1;
+    if (!bm) return -1;
+    return am - bm;
+  });
   return { ok: true, items: out.slice(-30) };
 }
 

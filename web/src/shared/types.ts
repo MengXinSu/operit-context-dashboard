@@ -553,6 +553,8 @@ export interface RequestRecord {
    */
   /** 续编跳变吞掉的虚拟轮数（系统警告/截断类）：宿主 apiTimeline 设置；>0 时趋势图该柱标红。 */
   skip?: number
+  /** W8 跳过明细：该轮跳过的系统警告实录（留档对拍；含已压缩历史；桥端 apiTimeline/apiSteps 附挂）。 */
+  skipWarns?: Array<{ wtype: string; text: string; at?: string; atMs?: number; idx?: number }>
   stepCount?: number
   /** 图片附件 token（Operit）：该轮留存历史里图片附件估算合计（快照行 imgPaths → 桥层按官方公式估算；文件读不到按 350/张）。旧数据无此字段（读作 0）。 */
   img?: number

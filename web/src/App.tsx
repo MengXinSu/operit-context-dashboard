@@ -102,6 +102,7 @@ function toRequests(items: any[] | null): RequestRecord[] {
     skill: it.skill, summary: it.summary, assistant: it.assistant, tool: it.tool, total: it.total,
     historyCount: it.historyCount, historyChars: it.historyChars,
     skip: it.skip,
+    skipWarns: it.skipWarns,
     brief: it.brief,
     img: it.img, imgCount: it.imgCount,
   }))
@@ -166,7 +167,7 @@ type BrowserState = {
 }
 
 /** W5事件卡筛选：与宿主 apiEvents 产出的 kind 对齐（压缩/模型切换）。 */
-const EVENT_KINDS: string[] = ['compaction', 'model']
+const EVENT_KINDS: string[] = ['compaction', 'model', 'warn']
 
 const BROWSER_CATS: { key: string; label: string; color: string }[] = [
   // 按上下文注入顺序排：SYSTEM 内四段 → 总结 → 工具 → 历史消息
@@ -631,7 +632,9 @@ export function App() {
     const turnSteps = agg && agg.stepCount !== undefined ? agg.stepCount : 0
     const mkIdx = displayRequests.findIndex((x) => x.seq === selected)
     const marker = mkIdx >= 0 ? (markers[mkIdx] || null) : null
-    return { r, usage, turnSteps, marker, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
+    const skipN = granularity === 'step' ? (r.skip || 0) : ((agg && agg.skip !== undefined) ? agg.skip : (r.skip || 0))
+    const skipWarns = granularity === 'step' ? (r.skipWarns || []) : ((agg && agg.skipWarns) || [])
+    return { r, usage, turnSteps, marker, skipN, skipWarns, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
   }, [selected, requests, state.messages, displayRequests, markers])
 
   // W7① 选中步/轮的 brief：步模式直接取；轮模式取该轮最后一步（输入行留空，与上游 turn 语义一致）。
@@ -1075,7 +1078,7 @@ export function App() {
           <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 8, fontSize: 11.5, lineHeight: 1.9 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontWeight: 600 }}>{granularity === 'step' ? `第 ${selectedInfo.r.turn} 轮 · 第 ${selectedInfo.r.step} 步` : (selectedInfo.turnSteps > 1 ? `第 ${selectedInfo.r.turn} 轮 · 共 ${selectedInfo.turnSteps} 步` : `第 ${selectedInfo.r.turn} 轮`)}</span>
-              <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span>{selectedInfo.marker ? <span style={{ fontSize: 10, color: 'var(--dsw-alias-state-warn-primary)' }} title="该轮与上一步之间发生过上下文压缩">✂压缩 −{selectedInfo.marker.count}条</span> : null}<span style={{ opacity: 0.7 }}>≈{fmtTok(selectedInfo.r.total)}</span>
+              <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span>{selectedInfo.marker ? <span style={{ fontSize: 10, color: 'var(--dsw-alias-state-warn-primary)' }} title="该轮与上一步之间发生过上下文压缩">✂压缩 −{selectedInfo.marker.count}条</span> : null}{selectedInfo.skipN ? <span style={{ fontSize: 10, color: 'var(--dsw-alias-state-warn-primary)' }} title="此处跳过 N 个系统警告虚拟轮（截断/输出异常）">!{selectedInfo.skipN}</span> : null}<span style={{ opacity: 0.7 }}>≈{fmtTok(selectedInfo.r.total)}</span>
               <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setSelected(null)}>✕</button>
             </div>
                         <div style={{ marginTop: 8 }}>
@@ -1095,6 +1098,14 @@ export function App() {
             {selectedInfo.usage ? (
               <div style={{ opacity: 0.9 }}>本轮用量：输入 {fmtTok(selectedInfo.usage.input)} · 输出 {fmtTok(selectedInfo.usage.output)} · 缓存 {fmtTok(selectedInfo.usage.cached)}（{Math.round(selectedInfo.usage.cached / Math.max(1, selectedInfo.usage.input) * 100)}%）· 等待 {(selectedInfo.usage.waitMs / 1000).toFixed(1)}s · 生成 {(selectedInfo.usage.outMs / 1000).toFixed(1)}s</div>
             ) : (<div style={{ opacity: 0.55, fontSize: 11 }}>本轮用量：待该轮完成后显示</div>)}
+            {selectedInfo.skipWarns.length > 0 ? (
+              <div style={{ marginTop: 6, borderTop: '1px dashed var(--dsw-alias-border-l1)', paddingTop: 6 }}>
+                <div style={{ color: 'var(--dsw-alias-state-warn-primary)', fontSize: 11 }}>⚠跳过明细 · {selectedInfo.skipWarns.length}条（与警告实录对拍）</div>
+                {selectedInfo.skipWarns.map((w: any, wi: number) => (
+                  <div key={wi} style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.7 }}>· [{t('warn.' + (w.wtype || 'other'))}] {String(w.text || '')}</div>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div style={{ marginTop: 6, fontSize: 11, opacity: 0.5 }}>点柱子查看该轮详情</div>
@@ -1129,7 +1140,18 @@ export function App() {
           ))}
         </span>
         </div>
-        {state.events && state.events.length > 0 ? (shownEvents.length > 0 ? shownEvents.map((ev: any, i: number) => (
+        {state.events && state.events.length > 0 ? (shownEvents.length > 0 ? shownEvents.map((ev: any, i: number) => {
+          if (ev.kind === 'warn') {
+            return (
+              <div key={i} onClick={() => locateAny([{ idx: ev.idx, cat: 'user' }])} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer' }}>
+                <span style={{ flex: 'none' }}>⚠</span>
+                <span className={'lc-kind lc-kind-warn'}>{t('kind.warn')}</span>
+                <span style={{ color: 'var(--dsw-alias-state-warn-primary)' }}>[{t('warn.' + (ev.wtype || 'other'))}] {String(ev.text || '')}</span>
+                <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10, flex: 'none' }}>{String(ev.at || '').slice(11, 16)}</span>
+              </div>
+            )
+          }
+          return (
           <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)' }}>
             <span style={{ flex: 'none' }}>{ev.kind === 'compaction' ? '✂' : ev.kind === 'model' ? '⇄' : '•'}</span>
             <span className={'lc-kind lc-kind-' + ev.kind}>{t('kind.' + ev.kind)}</span>
@@ -1139,7 +1161,7 @@ export function App() {
             {ev.kind === 'compaction' && ev.savedChars ? <span style={{ opacity: 0.55, fontSize: 10, flex: 'none' }}>释放 {Math.round(ev.savedChars / 1000)}k 字符</span> : null}
             <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10, flex: 'none' }}>{String(ev.at || '').slice(11, 16)}</span>
           </div>
-        )) : (<div style={{ fontSize: 12, opacity: 0.55 }}>{t('events.empty')}</div>)) : (
+        )}) : (<div style={{ fontSize: 12, opacity: 0.55 }}>{t('events.empty')}</div>)) : (
           <div style={{ fontSize: 12, opacity: 0.55 }}>{t('events.empty')}</div>
         )}
       </div>

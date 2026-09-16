@@ -52,7 +52,7 @@ export function aggregateByTurn(requests: RequestRecord[]): RequestRecord[] {
     const last = out.length > 0 ? out[out.length - 1] : null
     if (last !== null && (last.turn ?? 0) === (req.turn ?? 0)) {
       runSteps++
-      out[out.length - 1] = { ...req, stepCount: runSteps, skip: (req.skip ?? 0) + (last.skip ?? 0) }
+      out[out.length - 1] = { ...req, stepCount: runSteps, skip: (req.skip ?? 0) + (last.skip ?? 0), skipWarns: [...(last.skipWarns || []), ...(req.skipWarns || [])] }
     } else {
       runSteps = 1
       out.push({ ...req, stepCount: 1 })

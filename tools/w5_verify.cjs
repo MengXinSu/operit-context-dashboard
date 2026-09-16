@@ -79,7 +79,7 @@ function check(name, ok, extra) {
       rows: [...card.querySelectorAll('.lc-kind')].map((k) => k.textContent),
     };
   });
-  check('1a 事件chips=2（压缩/切换）', s1.n === 2 && s1.texts[0] === '压缩2' && s1.texts[1] === '切换1', JSON.stringify(s1.texts));
+  check('1a 事件chips=3（压缩/切换/报错，W8 新增报错）', s1.n === 3 && s1.texts[0] === '压缩2' && s1.texts[1] === '切换1' && s1.texts[2] === '报错', JSON.stringify(s1.texts));
   check('1b 行内kind chip 新在前', JSON.stringify(s1.rows) === JSON.stringify(['压缩', '切换', '压缩']), JSON.stringify(s1.rows));
   await page.screenshot({ path: SHOT_DIR + '/w5_1_events.png' });
   await page.evaluate(() => { [...document.querySelectorAll('.lc-kinds .lc-gran-btn')].find((b) => b.innerText.includes('切换')).click(); });
