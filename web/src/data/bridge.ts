@@ -117,14 +117,77 @@ export async function fetchMessages(): Promise<MessageItem[] | null> {
   const r = await call<{ ok: boolean; items?: MessageItem[] }>('messages')
   return r && r.ok && r.items ? r.items : null
 }
+
 export async function fetchEvents(): Promise<any[] | null> {
   const r = await call<{ ok: boolean; items?: any[] }>('events')
   return r && r.ok && r.items ? r.items : null
 }
-export async function fetchFileActivity(): Promise<any[] | null> {
-  const r = await call<{ ok: boolean; items?: any[] }>('fileActivity')
-  return r && r.ok && r.items ? r.items : null
+
+// ── 文件活动 v2（宿主桥 apiFileActivity 2.2.0：op 级记录 + 按路径聚合 + 总览）──
+
+export interface FileActivityOp {
+  /** 完成该操作的 TOOL_RESULT 的 preparedHistory 下标（= resultIdx；W3 定位锚点）。 */
+  seq: number
+  kind: 'read' | 'write' | 'search'
+  tool: string
+  /** 操作目标；pathless 搜索时是搜索 pattern 本身（pattern: true）。 */
+  path: string
+  added: number
+  removed: number
+  err: boolean
+  /** 配对锚点：源 TOOL_CALL / TOOL_RESULT 的 preparedHistory 下标（W3 定位用）。 */
+  callIdx: number
+  resultIdx: number
+  /** 读操作：结果 meta 的精确窗口，或 limit 参数的估算（est: true）。 */
+  read?: { start: number; count: number } | { count: number; est: true }
+  /** 搜索命中行数。 */
+  hits?: number
+  /** 搜索的操作数（同时有路径与 pattern 时）。 */
+  detail?: string
+  /** path 是 pathless 搜索的 pattern，不是文件路径。 */
+  pattern?: true
 }
+
+export interface FileActivityEntry {
+  path: string
+  form: 'text' | 'image' | 'dir'
+  reads: number
+  writes: number
+  searches: number
+  added: number
+  removed: number
+  errs: number
+  /** 最新在前。 */
+  ops: FileActivityOp[]
+  /** path 是 pathless 搜索的 pattern（展示不按路径处理）。 */
+  pattern?: true
+}
+
+export interface FileActivityTotals {
+  read: { files: number; ops: number }
+  write: { files: number; ops: number }
+  search: { files: number; ops: number }
+  image: { files: number; ops: number }
+  added: number
+  removed: number
+}
+
+export interface FileActivityData {
+  entries: FileActivityEntry[]
+  totals: FileActivityTotals
+}
+
+export const EMPTY_FA_TOTALS: FileActivityTotals = {
+  read: { files: 0, ops: 0 }, write: { files: 0, ops: 0 }, search: { files: 0, ops: 0 }, image: { files: 0, ops: 0 },
+  added: 0, removed: 0,
+}
+
+export async function fetchFileActivity(): Promise<FileActivityData | null> {
+  const r = await call<{ ok: boolean; entries?: FileActivityEntry[]; totals?: FileActivityTotals }>('fileActivity')
+  if (!r || !r.ok) return null
+  return { entries: r.entries || [], totals: r.totals || EMPTY_FA_TOTALS }
+}
+
 export async function fetchToolUsage(): Promise<any[] | null> {
   const r = await call<{ ok: boolean; items?: any[] }>('toolUsage')
   return r && r.ok && r.items ? r.items : null

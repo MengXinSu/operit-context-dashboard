@@ -4,12 +4,13 @@ import { makeViewKit } from './client/viewkit'
 import { makeStackedBar, makeLegend } from './client/components/stackedBar'
 import { makeDonut } from './client/components/donut'
 import { makeTrendChart, aggregateByTurn } from './client/components/trendChart'
+import { makeFileCard } from './client/components/fileCard'
 import { partsOf, IMG_COLOR } from './client/categories'
 import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage,
   fetchTodayMessages, fetchSteps, type TodaySessionGroup,
-  type MessageItem, type RawSectionData,
+  type MessageItem, type RawSectionData, type FileActivityData,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord } from './shared/types'
 
@@ -81,6 +82,7 @@ const StackedBar = makeStackedBar(kit)
 const Legend = makeLegend(kit)
 const Donut = makeDonut(kit)
 const TrendChart = makeTrendChart(kit)
+const FileCard = makeFileCard(kit)
 
 const DEMO_CURRENT = {
   system: 16000, tools: 12000, user: 2000, inject: 1000, skill: 1000,
@@ -137,7 +139,7 @@ type DataState = {
   steps?: RequestRecord[]
   messages?: MessageItem[]
   events?: any[]
-  fileActivity?: any[]
+  fileActivity?: FileActivityData | null
   toolUsage?: any[]
   todayGroups?: TodaySessionGroup[]
   imgAtt?: { count: number; tokens: number }
@@ -263,7 +265,7 @@ export function App() {
         phase: 'ready', session: sum.session, cardName: (sum as any).cardName, current: sum.current,
         counts: sum.counts, worldbook: sum.worldbook,
         historyCount: sum.historyCount, requests, steps, messages: msgs || [],
-        events: evs || [], fileActivity: fa || [], toolUsage: tu || [],
+        events: evs || [], fileActivity: fa || null, toolUsage: tu || [],
         todayGroups: (tm && tm.ok && tm.groups) ? tm.groups : [],
         imgAtt: (sum as any).imgAttachments || undefined,
       })
@@ -726,24 +728,11 @@ export function App() {
         )}
       </div>
 
-      <div className="lc-card">
-        <div className="lc-card-title">
-          <span className="lc-card-title-text">文件活动</span>
-          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>从工具调用解析 · 零新增写入</span>
-        </div>
-        {(state.fileActivity || []).length > 0 ? (state.fileActivity || []).map((f: any, i: number) => (
-          <div key={i} style={{ padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)' }}>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 12 }}>
-              <span style={{ flex: 'none', fontSize: 10, opacity: 0.85, background: 'var(--dsw-alias-bg-layer-2)', padding: '1px 5px', borderRadius: 4 }}>{f.writes > 0 && f.reads > 0 ? '读写' : f.writes > 0 ? '写' : '读'}</span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={String(f.path || '')}>{String(f.path || '')}</span>
-              <span style={{ marginLeft: 'auto', flex: 'none', opacity: 0.55, fontSize: 10 }}>{f.count} 次</span>
-            </div>
-            <div style={{ fontSize: 10, opacity: 0.5, marginTop: 2 }}>{f.tools}</div>
-          </div>
-        )) : (
-          <div style={{ fontSize: 12, opacity: 0.55 }}>本轮未检测到文件操作（read/write/edit 等工具会显示在这里）</div>
-        )}
-      </div>
+      <FileCard activity={state.fileActivity || null}
+        loading={state.phase === 'loading'}
+        failed={state.phase === 'error'}
+        onRetry={() => { try { location.reload() } catch (e) { setRefreshN(refreshN + 1) } }}
+      />
 
       <div className="lc-card">
         <div className="lc-card-title">

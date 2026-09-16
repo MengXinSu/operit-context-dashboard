@@ -911,7 +911,7 @@ function fa2ParseResult(content, idx) {
   var toolRaw = h[1], tool = fa2ToolTail(toolRaw);
   var kind = FA2_KIND[tool];
   if (!kind) return null;
-  var err = h[2] === 'error' || s.indexOf('<error>') > -1;
+  var err = h[2] === 'error' || /^<tool_result_[A-Za-z0-9]+[^>]*>\s*<content>\s*<error>/.test(s);
   var hints = [], win = null, lineRange = null, hits = 0, hitFiles = 0, searchFiles = null, added = 0, removed = 0, hasDelta = false;
   // read_file_part 窗口：Part x of y (Lines a-b of c)
   var w = s.match(/Part (\d+) of (\d+) \(Lines (\d+)-(\d+) of (\d+)\)/);

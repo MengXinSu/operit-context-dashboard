@@ -215,7 +215,7 @@ return JSON.parse(r);
 | `timeline` | 逐轮上下文构成（趋势图数据） | `{ok, items:[{seq,turn,step,t,system,tools,user,inject,skill,summary,assistant,tool,total,historyCount}]}` |
 | `messages` | 当前会话消息级 usage 列表 | `{ok, items:[{t,sentAt,input,output,cached,waitMs,outMs,roleName,model}]}` |
 | `events` | 上下文事件（压缩点/模型切换） | `{ok, items:[…]}` |
-| `fileActivity` | 文件活动聚合 | `{ok, items:[…]}` |
+| `fileActivity` | 文件活动聚合（v2：op 级 + 按路径聚合 + 锚点） | `{ok, total, entries:[{path,form,reads,writes,searches,added,removed,errs,ops:[{seq,kind,tool,path,added,removed,err,callIdx,resultIdx,read?,hits?,detail?,pattern?}],pattern?}], totals:{read/write/search/image:{files,ops},added,removed}, stats, items(legacy)}` |
 | `toolUsage` | 工具调用统计 | `{ok, items:[…]}` |
 | `rawSection` / `rawItem` | 上下文浏览器：分类列表 / 条目全文 | `{ok, kind, items/content, …}` |
 | `todayMessages` | 跨会话「今天」的分组数据（今日花费） | `{ok, groups:[{session, base:{input,output,cached}, items:[…]}]}` |
@@ -284,6 +284,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | `donut` | 环形图（构成/耗时） | 段→弧换算、中心大字 + 小字、hover 高亮（`hoverKey/onHoverKey`） |
 | `trendChart` | 逐轮堆叠柱趋势 | 自适应 y 轴、轮次聚合（「步骤/轮次」切换保留：轮次=快照聚合，步骤=宿主从 raw 事后重建——快照每轮 1 条，无独立步骤数据，见坑 13）、全量/增量模式、选中/悬停联动、图片段（第十段，`img > 0` 时，见坑 16） |
 | `legend` | 图例行 | 色点 + 名称 + 值，与条/环共享 hoverKey |
+| `fileCard` | 文件活动卡（2026-09-16） | 上游形态：chips 筛选（五类+计数）、路径搜索、排序（次数/最新/路径）、meta 条（文件数 + 总 delta + 气泡说明）、文件行（form 图标/完整路径/徽章/delta/错误点）、点行展开操作日志（树轨）；窄屏折行走容器查询；时间显示与定位联动留待后续窗口 |
 | `viewkit` | 工具包（t/fmt/catLabel 等注入） | 所有组件通过 make*(kit) 工厂创建 |
 
 ### 5.3 页面卡片与顺序（最终验收版）
@@ -298,7 +299,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 上下文浏览器：10 个可展开分类（系统提示词/技能注入/世界书/用户资料/对话总结/工具定义/用户消息/助手消息/工具结果/全部历史）
 耗时统计：Donut（模型等待/模型生成/工具与开销）+ 图例（时长 + 百分比）
 趋势：堆叠柱（轮次聚合 + 全量/增量切换 + 图片段）；点柱详情 = 该轮占用条（StackedBar 铺满）+ 2 列颜色图例（各区块颜色区分，含图片段）
-世界书 · 本轮注入 / 上下文事件 / 文件活动 / 工具使用
+世界书 · 本轮注入 / 上下文事件 / 文件活动（chips + 路径搜索 + 排序 + 展开操作日志）/ 工具使用
 ```
 
 ### 5.4 数据加载与状态
@@ -367,6 +368,8 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 14. **轮号跨压缩续编**（2026-09-15）：快照的 `countByKind.USER` 是「当前留存窗口」内的用户消息数，上下文压缩后窗口重排、该计数骤降（实测一段序列 …16→2）。宿主 `apiTimeline` 不再直接用它当轮号，改为增量续编 `turnCounter`：增长按差值累加；压缩骤降视为新一轮 +1；同值视为同轮不同步骤。真实会话数据（69 条快照、含 3 次压缩）复算：旧算法 3 次回跳 → 新算法 0 次。**残留**：个别轮次采集端未写 send 阶段快照（原因见坑 15：系统警告类「虚拟轮」）；显示层已按「+1 吞变 + 红标」消化。
 15. **轮号续编语义修订**（2026-09-15 晚）：增长从「按差值累加」改为「一律 +1」——系统警告类「虚拟轮」（app 崩溃残留、工具输出截断等，不写快照）不再让轮号跳格；被吞掉的个数记入该轮快照行的 `skip` 字段，趋势图在该柱标红「!N」（title 带说明）。全量数据离线复算：9 处旧跳变 → 0 跳变。老数据（警告原文已被上下文压缩清掉）无法再细分类型；有 raw 证据的窗口可细分（暂未实现）
 16. **趋势图「图片段」数据链路**（2026-09-15 晚）：快照只记文本字符构成，图片 token 进不了趋势图（原待办②）。已实现方案：采集层 `collectSnapshot` 增 `imgPaths` 字段（扫 `preparedHistory` 里 `<attachment ... type="image...>` 的 id，去重，**只存路径、钩子零 IO**）；桥层 `apiTimeline` 用 `imgTokensOfPath`（含 `IMG_TOKEN_CACHE`）逐路径估算（复用 `imageSizeOf`/`estimateImageTokens`，文件读不到按 350/张），rec 补 `img`/`imgCount` 并计入 `total` 与 96 万上限保护（`anchorTo` keys 加 `"img"`）；前端趋势图按「第十段」渲染（stacked / delta 双向 arms / adaptive 缩放全链路，色 `IMG_COLOR`），详情卡加「图片」项，CSS 补 `data-catdim='img'` re-light 行。口径与「当前上下文」卡完全一致。**限制**：旧快照无 `imgPaths` → 旧轮无图片段（只能从部署后积累）；采集侧只记「留存窗口内」的附件（压缩后自动收缩）。。
+17. **宿主 AI 的 edit_file 是「AI 式模糊匹配」**（2026-09-16）：old 块起止边界模糊时会**吞掉中间行或残留尾巴**（bridge.ts 实测被吞 2 处、残留 2 行）。大块精确改动用 `python str.replace`（先 `count==1` 断言）+ 脚本化写入，或整文件重写；每次编辑后必须跑语法/构建校验（esbuild / node --check / fa_check）。
+18. **`<error>` 判定必须锚定结构位置**（2026-09-16）：桥 v2 旧实现「全文扫 `<error>` 字样」判错——读自身文档（正文含 `<error>` 示例文本）时误标错误红点。已改：`status="error"` 或结果**开头** `\s*<content>\s*<error>` 锚定正则（宿主桥 2.2.1）。全库 46 份 raw 复算：err 条目 24→21，减掉的全是误报、余下全为真错。**教训：内容里会包含标记语法的文本（文档/代码/日志），标签判定只认结构锚点。**
 
 ---
 
@@ -418,7 +421,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - [ ] 部署验证：桥方法逐个返回正确 JSON
 
 **Stage 4 · 前端页面**
-- [ ] Vite + React + TS 工程；实现组件（stackedBar/donut/trendChart/legend）
+- [ ] Vite + React + TS 工程；实现组件（stackedBar/donut/trendChart/legend/fileCard）
 - [ ] 实现卡片页（§5.3 顺序）与交互（§5.6）
 - [ ] localStorage：价格配置 + 偏好持久化
 - [ ] 构建单文件并部署到 preview/，真机验收

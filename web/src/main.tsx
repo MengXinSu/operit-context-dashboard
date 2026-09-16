@@ -9,6 +9,7 @@ import './client/styles/base.css'
 import './client/styles/stats.css'
 import './client/styles/stackedBar.css'
 import './client/styles/trendChart.css'
+import './client/styles/fileCard.css'
 import './app.css'
 import { App } from './App'
 
