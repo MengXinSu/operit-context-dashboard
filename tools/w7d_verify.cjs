@@ -20,7 +20,7 @@ const IMG_BAD = '/tmp/w7d_imgs/nope.png';
 function mockScript() {
   return () => {
     const ITEMS = [
-      { idx: 0, kind: 'USER', chars: 300, preview: '看图条目预览AAA' },
+      { idx: 0, kind: 'USER', chars: 300, preview: '看图条目预览AAA <attachment id="/tmp/operit-repo-sync/tools/fixtures/w7d_real.png" filename="测试图.png" type="image/jpeg" size="12345">平台提示PLATFORMTIP勿显示</attachment>' },
       { idx: 1, kind: 'USER', chars: 130, preview: '坏图条目预览BBB' },
     ];
     const CONTENT_OK = '看这张图\n<link type=image id="test-uuid-1111">图片</link><attachment id="/tmp/operit-repo-sync/tools/fixtures/w7d_real.png" filename="测试图.png" type="image/jpeg" size="12345">平台提示PLATFORMTIP勿显示</attachment>\n后面还有文字hello';
@@ -61,6 +61,8 @@ function mockScript() {
   // 进入「全部历史」分类
   await page.click('text="全部历史"');
   await page.waitForSelector('text=看图条目预览AAA', { timeout: 10000 });
+  const pvText = await page.evaluate(() => document.body.innerText);
+  check('1j 预览行：attachment 块折叠为［图片］、内部提示不出现', pvText.indexOf('［图片：测试图.png］') >= 0 && pvText.indexOf('PLATFORMTIP') < 0 && pvText.indexOf('看图条目预览AAA') >= 0, '');
 
   // 展开条目0（正常图）
   await page.click('text=看图条目预览AAA');

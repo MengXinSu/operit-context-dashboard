@@ -194,6 +194,14 @@ function kindLabel(k?: string): string {
   }
 }
 const rawPreStyle: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.6, maxHeight: '55vh', overflow: 'auto', background: 'var(--dsw-alias-bg-layer-2)', padding: 10, borderRadius: 8, margin: '6px 0 0' }
+/** 预览行清洗：attachment 块（含被截断的不完整块）→「［图片：文件名］」；link 与其余文本原样保留（与展开正文的图卡语义对齐）。 */
+function cleanPreview(s: string): string {
+  return s.replace(/<attachment\s+([^>]*)>([\s\S]*?)(?:<\/attachment>|$)/gi, (_m, attrs) => {
+    const fn = /filename\s*=\s*"([^"]*)"/i.exec(attrs);
+    return fn && fn[1] ? `［图片：${fn[1]}］` : '［图片］';
+  });
+}
+
 function TextPreview({ text, limit = 4000 }: { text: string; limit?: number }) {
   const [full, setFull] = useState(false)
   const LIMIT = limit
@@ -970,7 +978,7 @@ export function App() {
                             <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10 }}>{c.key === 'tools' ? '×' + (toolCounts.get(String(it.name)) || 0) + ' · ' : ''}{it.chars} 字符</span>
                             {browser.expanding === it.idx ? <span style={{ fontSize: 10, opacity: 0.6 }}>…</span> : null}
                           </div>
-                          <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{it.preview}</div>
+                          <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{cleanPreview(it.preview)}</div>
                           {browser.expandFailed && browser.expandFailed[it.idx] ? <div style={{ fontSize: 10, marginTop: 3, color: 'var(--dsw-alias-state-error-primary)' }}>读取失败 · 点击重试</div> : null}
                           {browser.expanded[it.idx] !== undefined ? <RichContent text={browser.expanded[it.idx]} limit={1200} /> : null}
                         </div>
