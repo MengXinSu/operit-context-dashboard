@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { fmtBytes, estimateImageTokens } from './client/format'
 import { DICT_ZH } from './client/i18n'
 import { makeViewKit } from './client/viewkit'
 import { makeStackedBar, makeLegend } from './client/components/stackedBar'
@@ -205,6 +207,109 @@ function TextPreview({ text, limit = 4000 }: { text: string; limit?: number }) {
     </div>
   )
 }
+
+// ── W7④ 图片附件：文本内嵌 <attachment> 标签 → 图片卡/灯箱（上下文浏览器条目内）──
+type AttInfo = { path: string; filename: string; mime: string; size: number }
+type AttSeg = { kind: 'text'; text: string } | { kind: 'img'; att: AttInfo }
+
+function parseAttAttrs(raw: string): Record<string, string> {
+  const o: Record<string, string> = {}
+  const re = /([a-zA-Z_]+)="([^"]*)"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(raw)) !== null) o[m[1]] = m[2]
+  return o
+}
+
+/** 把含 <attachment …> 标签的文本切成文本/图片段；无图片标签时返回 null（调用方走原 TextPreview）。 */
+function splitAttachments(text: string): AttSeg[] | null {
+  const re = /<attachment\s+([^>]*)>/g
+  let m: RegExpExecArray | null
+  const segs: AttSeg[] = []
+  let last = 0
+  let hasImg = false
+  while ((m = re.exec(text)) !== null) {
+    const attrs = parseAttAttrs(m[1])
+    const mime = String(attrs.type || '')
+    if (!/^image(\/|$)/i.test(mime)) continue // 非图片附件（如时间 bundle）保持原文
+    hasImg = true
+    if (m.index > last) segs.push({ kind: 'text', text: text.slice(last, m.index) })
+    segs.push({ kind: 'img', att: { path: String(attrs.id || ''), filename: String(attrs.filename || t('attach.image')), mime, size: Number(attrs.size) || 0 } })
+    const end0 = m.index + m[0].length
+    // 吞掉「内部平台提示 + 闭合标签」：图片块语义只需卡片本身（对齐上游纯 image block）
+    const closeAt = text.indexOf('</attachment>', end0)
+    const nextOpenAt = text.indexOf('<attachment', end0)
+    const hasClosing = closeAt >= 0 && (nextOpenAt < 0 || closeAt < nextOpenAt)
+    last = hasClosing ? closeAt + '</attachment>'.length : end0
+  }
+  if (!hasImg) return null
+  if (last < text.length) segs.push({ kind: 'text', text: text.slice(last) })
+  return segs
+}
+
+function AttachmentLightbox({ src, name, onClose }: { src: string; name: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return createPortal(
+    <div className="lc-att-lightbox" role="dialog" aria-modal="true" aria-label={t('attach.preview')} onClick={(e) => e.stopPropagation()}>
+      <div className="lc-att-lightbox-mask" aria-hidden="true" onClick={onClose} />
+      <img className="lc-att-lightbox-img" src={src} alt={name} />
+      <button type="button" className="lc-att-lightbox-close" aria-label={t('attach.close')} onClick={onClose}>✕</button>
+    </div>,
+    document.body,
+  )
+}
+
+/** 单张图片附件卡：64px 缩略图 + 文件名/尺寸/大小/≈token；点开灯箱，失败点击重试。 */
+function AttachmentCard({ att }: { att: AttInfo }) {
+  const [fail, setFail] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
+  const [preview, setPreview] = useState(false)
+  const src = 'file://' + att.path
+  const tokens = dims ? estimateImageTokens(dims.w, dims.h) : null
+  const onClick = (e: import('react').MouseEvent) => {
+    e.stopPropagation()
+    if (fail) { setFail(false); setAttempt((a) => a + 1); return }
+    setPreview(true)
+  }
+  const dimText = dims ? dims.w + '×' + dims.h : ''
+  const sizeText = att.size > 0 ? fmtBytes(att.size) : ''
+  const meta2 = [dimText, sizeText].filter(Boolean).join(' · ')
+  return (
+    <>
+      <button type="button" className="lc-att-item" title={fail ? t('attach.loadFailed') : t('attach.open')} onClick={onClick}>
+        <span className="lc-att-thumb">
+          {fail
+            ? <span className="lc-att-err">⚠</span>
+            : <img key={attempt} src={src} alt={att.filename} onLoad={(e) => setDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} onError={() => setFail(true)} />}
+        </span>
+        <span className="lc-att-meta">
+          <span className="lc-att-name" title={att.filename}>{att.filename}</span>
+          <span className="lc-att-row">{meta2 || (fail ? '' : '…')}</span>
+          {tokens !== null ? <span className="lc-att-row"><b className="lc-att-row-label">{t('attach.token')}</b>{'≈' + fmtTok(tokens)}</span> : null}
+        </span>
+      </button>
+      {preview ? <AttachmentLightbox src={src} name={att.filename} onClose={() => setPreview(false)} /> : null}
+    </>
+  )
+}
+
+/** 条目富内容渲染：图片标签 → 图片卡，其余文本走 TextPreview；无图时与原来完全一致。 */
+function RichContent({ text, limit }: { text: string; limit?: number }) {
+  const segs = useMemo(() => splitAttachments(text), [text])
+  if (!segs) return <TextPreview text={text} limit={limit} />
+  return (
+    <div>
+      {segs.map((s, i) => s.kind === 'img'
+        ? <AttachmentCard key={'att' + i} att={s.att} />
+        : (s.text.trim() === '' ? null : <TextPreview key={'txt' + i} text={s.text.replace(/^\n+|\n+$/g, '')} limit={limit} />))}
+    </div>
+  )
+}
+
 function fmtTok(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
@@ -854,7 +959,7 @@ export function App() {
                   ) : browser.error ? (
                     <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' }}>{browser.error}</div>
                   ) : browser.data && browser.data.kind === 'text' ? (
-                    <TextPreview text={browser.data.content || ''} />
+                    <RichContent text={browser.data.content || ''} />
                   ) : browser.data && browser.data.items && browser.data.items.length > 0 ? (
                     <div>
                       {items.map((it) => (
@@ -867,7 +972,7 @@ export function App() {
                           </div>
                           <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{it.preview}</div>
                           {browser.expandFailed && browser.expandFailed[it.idx] ? <div style={{ fontSize: 10, marginTop: 3, color: 'var(--dsw-alias-state-error-primary)' }}>读取失败 · 点击重试</div> : null}
-                          {browser.expanded[it.idx] !== undefined ? <TextPreview text={browser.expanded[it.idx]} limit={1200} /> : null}
+                          {browser.expanded[it.idx] !== undefined ? <RichContent text={browser.expanded[it.idx]} limit={1200} /> : null}
                         </div>
                       ))}
                       {browser.data.items.length < (browser.data.total || 0) ? (

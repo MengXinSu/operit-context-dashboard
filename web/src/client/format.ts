@@ -70,3 +70,100 @@ export function fmtDuration(ms: number): string {
   if (ms < 3_600_000) return `${m}m${s}s`
   return `${Math.floor(m / 60)}h${m % 60}m`
 }
+
+// ── Image token estimation（DeepSeek「图片 Token 计算器」移植；与宿主桥 index.ui.js 同公式同常量）──
+const IMG_PATCH = 14
+const IMG_DOWN = 3
+const IMG_MAX_TOKENS = 384
+const IMG_PAD = 4
+const IMG_MIN_PIXELS = 147456
+const IMG_MAX_RATIO = 8
+
+type ImgResizeResult = { nLlmH: number; nLlmW: number; bestHeight: number; bestWidth: number; numTokens: number }
+
+function imgGridTokens(rows: number, cols: number): number {
+  let n = rows * (cols + 1) + 2
+  if (rows % 2 === 1) n += cols + 1
+  n += (Math.ceil(rows / 2) * (cols + 1) % 2) * 2
+  return n
+}
+
+function imgSolveResize(height: number, width: number, budget: number): ImgResizeResult {
+  const ratio = height / width
+  const gridW = Math.sqrt((budget - 2) / ratio + 0.25) - 0.5
+  const gridH = gridW * ratio
+  const unit = IMG_PATCH * IMG_DOWN
+  let bestHeight: number, bestWidth: number
+  if (gridW < 1) {
+    let rows0 = Math.floor((budget - 2) / 2)
+    if (rows0 % 2 === 1) rows0 -= 1
+    bestWidth = unit
+    bestHeight = rows0 * unit
+  } else if (gridH < 2) {
+    const cols0 = Math.floor((budget - 2) / 2) - 1
+    bestHeight = 2 * unit
+    bestWidth = cols0 * unit
+  } else {
+    const cols = Math.trunc(gridW)
+    let rows = Math.trunc(gridH)
+    if (rows % 2 === 1) rows -= 1
+    const scale = Math.min(cols * unit / width, rows * unit / height)
+    bestWidth = Math.trunc(width * scale / IMG_PATCH) * IMG_PATCH
+    bestHeight = Math.trunc(height * scale / IMG_PATCH) * IMG_PATCH
+  }
+  const nH = Math.ceil(Math.floor(bestHeight / IMG_PATCH) / IMG_DOWN)
+  const nW = Math.ceil(Math.floor(bestWidth / IMG_PATCH) / IMG_DOWN)
+  return { nLlmH: nH, nLlmW: nW, bestHeight, bestWidth, numTokens: imgGridTokens(nH, nW) }
+}
+
+function imgSafeResize(height: number, width: number, paddedHeight: number, paddedWidth: number): ImgResizeResult {
+  const nH = Math.ceil(Math.floor(paddedHeight / IMG_PATCH) / IMG_DOWN)
+  const nW = Math.ceil(Math.floor(paddedWidth / IMG_PATCH) / IMG_DOWN)
+  const pad = IMG_PAD - 1
+  const budget = IMG_MAX_TOKENS - pad
+  let result: ImgResizeResult = { nLlmH: nH, nLlmW: nW, bestHeight: paddedHeight, bestWidth: paddedWidth, numTokens: imgGridTokens(nH, nW) }
+  if (result.numTokens > budget) {
+    result = imgSolveResize(height, width, budget)
+    let nextBudget = budget
+    while (result.numTokens > budget) {
+      nextBudget -= 1
+      result = imgSolveResize(height, width, nextBudget)
+    }
+  }
+  result.numTokens += pad
+  return result
+}
+
+function imgCalcResizeInner(width: number, height: number): ImgResizeResult {
+  let w = width
+  let h = height
+  if (w > h * IMG_MAX_RATIO) w = h * IMG_MAX_RATIO
+  const pixels = w * h
+  if (pixels < IMG_MIN_PIXELS && pixels > 0) {
+    const scale = Math.sqrt(IMG_MIN_PIXELS / pixels)
+    w = Math.trunc(w * scale)
+    h = Math.trunc(h * scale)
+  }
+  const paddedWidth = Math.ceil(w / IMG_PATCH) * IMG_PATCH
+  const paddedHeight = Math.ceil(h / IMG_PATCH) * IMG_PATCH
+  return imgSafeResize(h, w, paddedHeight, paddedWidth)
+}
+
+/**
+ * 按图片原始宽高估算 provider 计费 token（官方计算器公式：尺寸上限 → 网格化取整 →
+ * 迭代收敛；单图 ≤384）。用于图片附件卡的 ≈token 行。非法输入返回 null。
+ */
+export function estimateImageTokens(width: number | null | undefined, height: number | null | undefined): number | null {
+  if (width == null || height == null || !isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) return null
+  try {
+    let result = imgCalcResizeInner(width, height)
+    for (let i = 1; i < 10; i++) {
+      const next = imgCalcResizeInner(result.bestWidth, result.bestHeight)
+      if (next.nLlmH === result.nLlmH && next.nLlmW === result.nLlmW && next.bestHeight === result.bestHeight && next.bestWidth === result.bestWidth && next.numTokens === result.numTokens) return result.numTokens
+      result = next
+    }
+    return null
+  } catch (e) {
+    return null
+  }
+}
