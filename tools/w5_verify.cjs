@@ -50,7 +50,7 @@ function check(name, ok, extra) {
             { idx: 'tool:2', name: 'list_files', preview: '列出目录……', chars: 300 },
           ] });
           if (req.section === 'user') return JSON.stringify({ ok: true, kind: 'list', total: 1, offset: 0, items: [{ idx: 7, kind: 'USER', chars: 12, preview: '你好（mock）' }] });
-          if (req.section === 'tool') return JSON.stringify({ ok: true, kind: 'list', total: 1, offset: 0, items: [{ idx: 100, kind: 'TOOL_RESULT', toolName: 'read_file', chars: 5000, preview: 'XXXXXXXXXXXXXXXXXXXXXXXXXXXX' }] });
+          if (req.section === 'tool') return JSON.stringify({ ok: true, kind: 'list', total: 1, offset: 0, items: [{ idx: 100, kind: 'TOOL_RESULT', toolName: 'read_file', chars: 5000, preview: 'X'.repeat(60) }] });
           return JSON.stringify({ ok: true, kind: 'list', total: 0, items: [] });
         }
         if (m === 'rawItem') {
@@ -172,6 +172,11 @@ function check(name, ok, extra) {
   // ── 场景6：长内容渐进展开（1200 预览 +「展开全部」）──
   await page.evaluate(() => { [...document.querySelectorAll('span')].filter((s) => s.textContent === '工具结果' && s.parentElement.tagName === 'DIV')[0].parentElement.click(); });
   await page.waitForFunction(() => /X{20}/.test(document.body.innerText), null, { timeout: 5000 });
+  const s6pre = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('div')].find((d) => d.children.length === 0 && /X{20}/.test(d.textContent) && d.textContent.length < 200);
+    return el ? { sw: el.scrollWidth, cw: el.clientWidth } : null;
+  });
+  check('6d 长串预览不横向溢出（换行生效）', !!s6pre && s6pre.sw <= s6pre.cw + 2, JSON.stringify(s6pre));
   await page.evaluate(() => {
     const el = [...document.querySelectorAll('div')].find((d) => d.children.length === 0 && /X{20}/.test(d.textContent) && d.textContent.length < 200);
     el.parentElement.click();

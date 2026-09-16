@@ -672,7 +672,7 @@ export function App() {
                             <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10 }}>{c.key === 'tools' ? '×' + (toolCounts.get(String(it.name)) || 0) + ' · ' : ''}{it.chars} 字符</span>
                             {browser.expanding === it.idx ? <span style={{ fontSize: 10, opacity: 0.6 }}>…</span> : null}
                           </div>
-                          <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5 }}>{it.preview}</div>
+                          <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{it.preview}</div>
                           {browser.expandFailed && browser.expandFailed[it.idx] ? <div style={{ fontSize: 10, marginTop: 3, color: 'var(--dsw-alias-state-error-primary)' }}>读取失败 · 点击重试</div> : null}
                           {browser.expanded[it.idx] !== undefined ? <TextPreview text={browser.expanded[it.idx]} limit={1200} /> : null}
                         </div>
