@@ -222,32 +222,27 @@ function parseAttAttrs(raw: string): Record<string, string> {
 
 /** 把含 <attachment …> 标签的文本切成文本/图片段；无图片标签时返回 null（调用方走原 TextPreview）。 */
 function splitAttachments(text: string): AttSeg[] | null {
-  // W7④.1：link 引用标签（type=image）无独立显示价值（对应图已由 attachment 卡呈现，2026-09-17 真机确认成对出现）→ 吞掉
-  const cleaned = text.replace(/<link\s+type=image[^>]*>[\s\S]*?<\/link>/g, '')
   const re = /<attachment\s+([^>]*)>/g
   let m: RegExpExecArray | null
   const segs: AttSeg[] = []
   let last = 0
   let hasImg = false
-  while ((m = re.exec(cleaned)) !== null) {
+  while ((m = re.exec(text)) !== null) {
     const attrs = parseAttAttrs(m[1])
     const mime = String(attrs.type || '')
     if (!/^image(\/|$)/i.test(mime)) continue // 非图片附件（如时间 bundle）保持原文
     hasImg = true
-    if (m.index > last) segs.push({ kind: 'text', text: cleaned.slice(last, m.index) })
+    if (m.index > last) segs.push({ kind: 'text', text: text.slice(last, m.index) })
     segs.push({ kind: 'img', att: { path: String(attrs.id || ''), filename: String(attrs.filename || t('attach.image')), mime, size: Number(attrs.size) || 0 } })
     const end0 = m.index + m[0].length
     // 吞掉「内部平台提示 + 闭合标签」：图片块语义只需卡片本身（对齐上游纯 image block）
-    const closeAt = cleaned.indexOf('</attachment>', end0)
-    const nextOpenAt = cleaned.indexOf('<attachment', end0)
+    const closeAt = text.indexOf('</attachment>', end0)
+    const nextOpenAt = text.indexOf('<attachment', end0)
     const hasClosing = closeAt >= 0 && (nextOpenAt < 0 || closeAt < nextOpenAt)
     last = hasClosing ? closeAt + '</attachment>'.length : end0
   }
-  if (!hasImg) {
-    if (cleaned !== text) return [{ kind: 'text', text: cleaned }]
-    return null
-  }
-  if (last < cleaned.length) segs.push({ kind: 'text', text: cleaned.slice(last) })
+  if (!hasImg) return null
+  if (last < text.length) segs.push({ kind: 'text', text: text.slice(last) })
   return segs
 }
 

@@ -1,6 +1,6 @@
 // w7d_verify.cjs —— W7④ 图片附件卡本地交互验证（Playwright + mock 桥）
 // 跑法：NODE_PATH=/usr/lib/node_modules/@playwright/mcp/node_modules node tools/w7d_verify.cjs
-// 场景：① 图片卡渲染（缩略图/文件名/尺寸/大小/≈token）② 原文标签吞掉、前后文本保留
+// 场景：① 图片卡渲染（缩略图/文件名/尺寸/大小/≈token）② link 原样显示、前后文本保留
 //       ③ 点击 → 灯箱（Esc / 蒙层 / 关闭钮）④ 失败降级（⚠ + 点击重试不弹灯箱）⑤ 无页面错误
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -93,7 +93,7 @@ function mockScript() {
   check('1e 尺寸 2×2 显示', !!s1 && s1.text.indexOf('2×2') >= 0, '');
   check('1f 大小 12.3 kB 显示', !!s1 && s1.text.indexOf('12.3 kB') >= 0, '');
   check('1g ≈token 行', !!s1 && s1.text.indexOf('≈') >= 0, JSON.stringify(s1 && s1.text));
-  check('1h 原文标签/闭合/内部提示/link 不出现', !!s1 && !s1.bodyHasTag && !s1.bodyClose && !s1.bodyTip && !s1.bodyHasLink && !s1.bodyHasUuid, '');
+  check('1h link 原样显示（不吞掉）；附件标签/闭合/内部提示不出现', !!s1 && !s1.bodyHasTag && !s1.bodyClose && !s1.bodyTip && s1.bodyHasLink && s1.bodyHasUuid, '');
   check('1i 前后文本保留', !!s1 && s1.bodyText && s1.bodyText2, '');
 
   // 灯箱三连：开→Esc；开→蒙层；开→关闭钮
