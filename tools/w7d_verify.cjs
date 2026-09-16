@@ -23,7 +23,7 @@ function mockScript() {
       { idx: 0, kind: 'USER', chars: 300, preview: '看图条目预览AAA' },
       { idx: 1, kind: 'USER', chars: 130, preview: '坏图条目预览BBB' },
     ];
-    const CONTENT_OK = '看这张图\n<attachment id="/tmp/operit-repo-sync/tools/fixtures/w7d_real.png" filename="测试图.png" type="image/jpeg" size="12345">平台提示PLATFORMTIP勿显示</attachment>\n后面还有文字hello';
+    const CONTENT_OK = '看这张图\n<link type=image id="test-uuid-1111">图片</link><attachment id="/tmp/operit-repo-sync/tools/fixtures/w7d_real.png" filename="测试图.png" type="image/jpeg" size="12345">平台提示PLATFORMTIP勿显示</attachment>\n后面还有文字hello';
     const CONTENT_BAD = '坏图在这里：<attachment id="/tmp/w7d_imgs/nope.png" filename="坏图.png" type="image/jpeg" size="999">坏图提示BARTIP勿显</attachment>完事';
     window.CtxProbe = {
       api: function (payload) {
@@ -79,6 +79,8 @@ function mockScript() {
       bodyHasTag: document.body.innerText.indexOf('<attachment') >= 0,
     bodyClose: document.body.innerText.indexOf('</attachment>') >= 0,
     bodyTip: document.body.innerText.indexOf('PLATFORMTIP') >= 0,
+    bodyHasLink: document.body.innerText.indexOf('<link') >= 0,
+    bodyHasUuid: document.body.innerText.indexOf('test-uuid-1111') >= 0,
       bodyText: document.body.innerText.indexOf('后面还有文字hello') >= 0,
       bodyText2: document.body.innerText.indexOf('看这张图') >= 0,
       cards: document.querySelectorAll('.lc-att-item').length,
@@ -91,7 +93,7 @@ function mockScript() {
   check('1e 尺寸 2×2 显示', !!s1 && s1.text.indexOf('2×2') >= 0, '');
   check('1f 大小 12.3 kB 显示', !!s1 && s1.text.indexOf('12.3 kB') >= 0, '');
   check('1g ≈token 行', !!s1 && s1.text.indexOf('≈') >= 0, JSON.stringify(s1 && s1.text));
-  check('1h 原文标签/闭合/内部提示不出现', !!s1 && !s1.bodyHasTag && !s1.bodyClose && !s1.bodyTip, '');
+  check('1h 原文标签/闭合/内部提示/link 不出现', !!s1 && !s1.bodyHasTag && !s1.bodyClose && !s1.bodyTip && !s1.bodyHasLink && !s1.bodyHasUuid, '');
   check('1i 前后文本保留', !!s1 && s1.bodyText && s1.bodyText2, '');
 
   // 灯箱三连：开→Esc；开→蒙层；开→关闭钮
