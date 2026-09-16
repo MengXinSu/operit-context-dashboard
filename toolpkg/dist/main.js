@@ -214,7 +214,7 @@ function nativeApi() {
 
 var dirEnsured = false;
 
-function writeText(path, content) {
+async function atomicWriteNow(path, body) {
   var n = nativeApi();
   if (!n) return false;
   if (!dirEnsured) {
@@ -223,17 +223,36 @@ function writeText(path, content) {
     } catch (e) { /* 已存在 */ }
     dirEnsured = true;
   }
-  var body = str(content);
+  // 原子写（2026-09-17）：先写 .tmp 再 move 覆盖（move 行为已实测：目标存在时直接覆盖）。
+  // 读侧因此永不会撞上半写状态；写放大由 delete+create 的 2× 降为 1×（健康原则：写入要原子）。
   try {
-    try {
-      n.callTool("default", "delete_file", JSON.stringify({ path: path }));
-    } catch (e) { /* 不存在 */ }
-    n.callTool("default", "create_file", JSON.stringify({ path: path, new: body }));
+    var tmp = path + ".tmp";
+    await Tools.Files.write(tmp, body, false, "android");
+    await Tools.Files.move(tmp, path, "android");
     return true;
   } catch (e) {
-    log("write failed " + path + ": " + errText(e));
-    return false;
+    log("atomic write failed " + path + ": " + errText(e));
+    try { await Tools.Files.deleteFile(path + ".tmp", false, "android"); } catch (e0) { /* ignore */ }
+    // 兑底：旧路径 delete + create（非原子，但在 move 不可用时保持可用）
+    try {
+      try {
+        n.callTool("default", "delete_file", JSON.stringify({ path: path }));
+      } catch (e1) { /* 不存在 */ }
+      n.callTool("default", "create_file", JSON.stringify({ path: path, new: body }));
+      return true;
+    } catch (e2) {
+      log("write failed " + path + ": " + errText(e2));
+      return false;
+    }
   }
+}
+/** 覆写类写盘统一入口：挂全局写链（顺序 = 入链序），原子落盘防半写（健康原则） */
+function writeText(path, content) {
+  var body = str(content);
+  writeChain = writeChain.then(function () { return atomicWriteNow(path, body); }).catch(function (e) {
+    log("writeText chain error: " + errText(e));
+  });
+  return writeChain;
 }
 
 /** 安全 JSON：遇到循环引用/怪值不炸，逐字段降级 */
