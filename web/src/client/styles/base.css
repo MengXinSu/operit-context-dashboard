@@ -135,3 +135,8 @@
  pane, so the strips are neutralized here instead.
  */
 [data-conversation-scroll]:has(.lc-root, .lc-modal-backdrop) ~ [data-width-handle] { display: none; }
+
+/* W5事件卡：kind标签（对齐上游 events.css；当前数据用到的两类）。 */
+.lc-kind { flex: none; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.lc-kind-compaction { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 15%, transparent); color: var(--dsw-alias-state-error-primary); }
+.lc-kind-model { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 15%, transparent); color: var(--dsw-alias-brand-primary); }

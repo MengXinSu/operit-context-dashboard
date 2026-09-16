@@ -10,7 +10,7 @@ import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage,
   fetchTodayMessages, fetchSteps, type TodaySessionGroup,
-  type MessageItem, type RawSectionData, type FileActivityData, type FileActivityOp,
+  type MessageItem, type RawSectionData, type RawListItem, type FileActivityData, type FileActivityOp,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord } from './shared/types'
 
@@ -157,7 +157,12 @@ type BrowserState = {
   loadingMore?: boolean
   /** W3：定位未命中时的一次性提示（打开分类 / 成功定位时清除）。 */
   notice?: string
+  /** W5：条目全文读取失败标记（条目下显示「点击重试」；下次读取成功时清除）。 */
+  expandFailed?: Record<number, boolean>
 }
+
+/** W5事件卡筛选：与宿主 apiEvents 产出的 kind 对齐（压缩/模型切换）。 */
+const EVENT_KINDS: string[] = ['compaction', 'model']
 
 const BROWSER_CATS: { key: string; label: string; color: string }[] = [
   // 按上下文注入顺序排：SYSTEM 内四段 → 总结 → 工具 → 历史消息
@@ -224,6 +229,8 @@ export function App() {
   const [fileSort, setFileSort] = useState<'count' | 'latest' | 'path'>(() => { const v = loadPrefs().fileSort; return v === 'latest' || v === 'path' ? v : 'count' })
   const [toolSort, setToolSort] = useState<'size' | 'count' | 'name'>(() => { const v = loadPrefs().toolSort; return v === 'size' || v === 'name' ? v : 'count' })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // W5事件卡：kind筛选（默认全选；与上游一致，取消全部选择时列表显示空态）
+  const [pickedKinds, setPickedKinds] = useState<string[]>(() => EVENT_KINDS.slice())
   /** 偏好写回：更新 state + localStorage（设置卡与卡内切换共用；工具定义的消费点 W5 接入）。 */
   const pickGran = (v: 'step' | 'turn'): void => { setGranularity(v); savePref('granularity', v) }
   const pickMode = (v: 'total' | 'delta'): void => { setMode(v); savePref('mode', v) }
@@ -270,7 +277,7 @@ export function App() {
         return
       }
       setState({ phase: 'loading' })
-      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '' })
+      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
       const [sum, tl, msgs, evs, fa, tu, tm, st] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages(), fetchSteps()])
       if (!alive) return
       if (!sum || !sum.ok || !sum.current) {
@@ -356,7 +363,7 @@ export function App() {
       turnCount: lastTurn,
       steps: (state.steps && state.steps.length > 0) ? state.steps.length : requests.length,
       toolCalls: state.counts ? (state.counts.TOOL_CALL || 0) : 0,
-      hit: inSum > 0 ? Math.round((cachedSum / inSum) * 100) : 0,
+      hit: inSum > 0 ? ((cachedSum / inSum) * 100).toFixed(2) : null,
       waitSum,
       outSum,
       activeMs: firstT && lastT ? Math.max(0, lastT - firstT) : 0,
@@ -407,15 +414,31 @@ export function App() {
     // 该轮步数：取聚合记录自带的 stepCount（连续段内精确计数；直接 filter 全表会把压缩前后的同名轮串起来算多）
     const agg = displayRequests.find((x) => x.seq === selected)
     const turnSteps = agg && agg.stepCount !== undefined ? agg.stepCount : 0
-    return { r, usage, turnSteps, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
-  }, [selected, requests, state.messages, displayRequests])
+    const mkIdx = displayRequests.findIndex((x) => x.seq === selected)
+    const marker = mkIdx >= 0 ? (markers[mkIdx] || null) : null
+    return { r, usage, turnSteps, marker, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
+  }, [selected, requests, state.messages, displayRequests, markers])
+
+  // W5复核新增：事件筛选辅助 + 工具定义排序（设置卡 toolSort 的消费点；其余分类维持宿主顺序）。
+  const toggleKind = (k: string): void => { setPickedKinds((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k])) }
+  const evCounts = useMemo(() => { const m: Record<string, number> = {}; for (const ev of (state.events || [])) { const k = String(ev.kind || ''); m[k] = (m[k] || 0) + 1 } return m }, [state.events])
+  const shownEvents = useMemo(() => (state.events || []).filter((ev: any) => pickedKinds.includes(ev.kind)).slice().reverse(), [state.events, pickedKinds])
+  const toolCounts = useMemo(() => { const m = new Map<string, number>(); for (const u of (state.toolUsage || [])) m.set(String(u.name || ''), Number(u.count) || 0); return m }, [state.toolUsage])
+  /** size=体量（chars）降序；count=本会话调用次数降序（同次按名称）；name=字母序。 */
+  const sortToolItems = (items: RawListItem[]): RawListItem[] => {
+    const arr = items.slice()
+    if (toolSort === 'size') arr.sort((a, b) => (b.chars || 0) - (a.chars || 0))
+    else if (toolSort === 'count') arr.sort((a, b) => (toolCounts.get(String(b.name)) || 0) - (toolCounts.get(String(a.name)) || 0) || (String(a.name) < String(b.name) ? -1 : 1))
+    else arr.sort((a, b) => (String(a.name) < String(b.name) ? -1 : 1))
+    return arr
+  }
 
   async function openSection(cat: string, label: string) {
     if (browser.cat === cat) {
-      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '' })
+      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
       return
     }
-    setBrowser({ cat, label, data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '' })
+    setBrowser({ cat, label, data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
     const d = await fetchRawSection(cat, 0, 30)
     setBrowser((b) => b.cat === cat ? { ...b, data: d, loading: false, error: d && d.ok ? '' : ((d && (d as any).error) || '读取失败') } : b)
   }
@@ -448,7 +471,14 @@ export function App() {
     setBrowser((b) => ({ ...b, expanding: idx }))
     const item = await fetchRawItem(idx)
     // 迟到响应防串台：分类没变才写入（与 openSection 的守卫同款）
-    setBrowser((b) => b.cat !== catAtReq ? b : ({ ...b, expanding: null, expanded: item && item.ok && item.content !== undefined ? { ...b.expanded, [idx]: item.content } : b.expanded }))
+    setBrowser((b) => {
+      if (b.cat !== catAtReq) return b
+      const ok = !!(item && item.ok && item.content !== undefined)
+      const exf = { ...(b.expandFailed || {}) }
+      if (ok) delete exf[idx]
+      else exf[idx] = true
+      return { ...b, expanding: null, expanded: ok ? { ...b.expanded, [idx]: item!.content! } : b.expanded, expandFailed: exf }
+    })
   }
 
   // W3 定位联动：点文件卡操作行 → 打开「工具结果」分类，把对应条目滚入视野并展开。
@@ -464,7 +494,7 @@ export function App() {
     }
     setBrowser((b) => b.cat === 'tool'
       ? { ...b, loading: true, notice: '' }
-      : { cat: 'tool', label: '工具结果', data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '' })
+      : { cat: 'tool', label: '工具结果', data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
     const targets = op.resultIdx === op.callIdx ? [op.resultIdx] : [op.resultIdx, op.callIdx]
     for (const t of targets) {
       const d = await fetchRawSection('tool', 0, 30, t)
@@ -516,7 +546,7 @@ export function App() {
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.turnCount}</div><div style={{ fontSize: 10, opacity: 0.65 }}>轮次</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.steps}</div><div style={{ fontSize: 10, opacity: 0.65 }}>步骤</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.toolCalls}</div><div style={{ fontSize: 10, opacity: 0.65 }}>工具调用</div></div>
-        <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.hit}%</div><div style={{ fontSize: 10, opacity: 0.65 }}>缓存命中</div></div>
+        <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.hit === null ? '—' : stats.hit + '%'}</div><div style={{ fontSize: 10, opacity: 0.65 }}>缓存命中</div></div>
       </div>
 
       <div className="lc-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, textAlign: 'center' }}>
@@ -607,6 +637,8 @@ export function App() {
         </div>
         {BROWSER_CATS.map((c) => {
           const isOpen = browser.cat === c.key
+          // W5工具定义排序（设置卡 toolSort 的消费点；其余分类维持宿主顺序）
+          const items = browser.data && browser.data.items ? (c.key === 'tools' ? sortToolItems(browser.data.items) : browser.data.items) : []
           const countText = isOpen && browser.data && browser.data.ok
             ? (browser.data.kind === 'text' ? '≈' + (browser.data.chars || 0) + ' 字符' : (browser.data.total || 0) + ' 项')
             : null
@@ -623,6 +655,7 @@ export function App() {
               {isOpen ? (
                 <div style={{ padding: '4px 0 8px 15px' }}>
                   {browser.notice ? <div style={{ fontSize: 11, color: 'var(--dsw-alias-state-warn-primary)', padding: '2px 0 6px' }}>{browser.notice}</div> : null}
+                  {c.key === 'tools' && !browser.loading && !browser.error && browser.data && browser.data.kind === 'list' ? (<div style={{ display: 'flex', padding: '2px 0 4px' }}><span className="lc-gran" role="group" style={{ marginLeft: 0, display: 'inline-flex' }} title={t('tool.sortTip')}>{(['size', 'count', 'name'] as const).map((k) => (<button key={k} type="button" className={'lc-gran-btn' + (toolSort === k ? ' lc-gran-on' : '')} onClick={() => pickToolSort(k)}>{t('tool.sort.' + k)}</button>))}</span></div>) : null}
                   {browser.loading ? (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>读取中…</div>
                   ) : browser.error ? (
@@ -631,15 +664,16 @@ export function App() {
                     <TextPreview text={browser.data.content || ''} />
                   ) : browser.data && browser.data.items && browser.data.items.length > 0 ? (
                     <div>
-                      {browser.data.items.map((it) => (
+                      {items.map((it) => (
                         <div key={it.idx} ref={(el) => { itemRefs.current[it.idx] = el }} onClick={() => expandItem(it.idx)} style={{ padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer' }}>
                           <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 12 }}>
                             <span style={{ flex: 'none', fontSize: 10, opacity: 0.8, background: 'var(--dsw-alias-bg-layer-2)', padding: '1px 5px', borderRadius: 4 }}>{kindLabel(it.kind)}</span>
                             {it.toolName || it.name ? <b style={{ fontWeight: 600 }}>{it.toolName || it.name}</b> : null}
-                            <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10 }}>{it.chars} 字符</span>
+                            <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10 }}>{c.key === 'tools' ? '×' + (toolCounts.get(String(it.name)) || 0) + ' · ' : ''}{it.chars} 字符</span>
                             {browser.expanding === it.idx ? <span style={{ fontSize: 10, opacity: 0.6 }}>…</span> : null}
                           </div>
                           <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5 }}>{it.preview}</div>
+                          {browser.expandFailed && browser.expandFailed[it.idx] ? <div style={{ fontSize: 10, marginTop: 3, color: 'var(--dsw-alias-state-error-primary)' }}>读取失败 · 点击重试</div> : null}
                           {browser.expanded[it.idx] !== undefined ? <pre style={rawPreStyle}>{browser.expanded[it.idx]}</pre> : null}
                         </div>
                       ))}
@@ -731,7 +765,7 @@ export function App() {
           <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 8, fontSize: 11.5, lineHeight: 1.9 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontWeight: 600 }}>{granularity === 'step' ? `第 ${selectedInfo.r.turn} 轮 · 第 ${selectedInfo.r.step} 步` : (selectedInfo.turnSteps > 1 ? `第 ${selectedInfo.r.turn} 轮 · 共 ${selectedInfo.turnSteps} 步` : `第 ${selectedInfo.r.turn} 轮`)}</span>
-              <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span><span style={{ opacity: 0.7 }}>≈{fmtTok(selectedInfo.r.total)}</span>
+              <span style={{ opacity: 0.6 }}>{new Date(selectedInfo.r.time).toLocaleTimeString('zh-CN', { hour12: false })}</span>{selectedInfo.marker ? <span style={{ fontSize: 10, color: 'var(--dsw-alias-state-warn-primary)' }} title="该轮与上一步之间发生过上下文压缩">✂压缩 −{selectedInfo.marker.count}条</span> : null}<span style={{ opacity: 0.7 }}>≈{fmtTok(selectedInfo.r.total)}</span>
               <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setSelected(null)}>✕</button>
             </div>
                         <div style={{ marginTop: 8 }}>
@@ -776,19 +810,26 @@ export function App() {
       <div className="lc-card">
         <div className="lc-card-title">
           <span className="lc-card-title-text">上下文事件</span>
-          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>压缩 / 模型切换</span>
+          <span className="lc-kinds" role="group" style={{ marginLeft: 'auto' }}>
+          {EVENT_KINDS.map((k) => (
+            <button key={k} type="button" className={'lc-gran-btn' + (pickedKinds.includes(k) ? ' lc-gran-on' : '')} onClick={() => toggleKind(k)}>
+              {t('kind.' + k)}{evCounts[k] ? <span className="lc-kind-n">{evCounts[k]}</span> : null}
+            </button>
+          ))}
+        </span>
         </div>
-        {(state.events || []).length > 0 ? (state.events || []).map((ev: any, i: number) => (
+        {state.events && state.events.length > 0 ? (shownEvents.length > 0 ? shownEvents.map((ev: any, i: number) => (
           <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)' }}>
             <span style={{ flex: 'none' }}>{ev.kind === 'compaction' ? '✂' : ev.kind === 'model' ? '⇄' : '•'}</span>
-            <span>{ev.kind === 'compaction'
+            <span className={'lc-kind lc-kind-' + ev.kind}>{t('kind.' + ev.kind)}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.kind === 'compaction'
               ? '压缩了 ' + ev.count + ' 条消息（' + ev.from + ' → ' + ev.to + '）'
               : ev.kind === 'model' ? '模型切换：' + ev.from + ' → ' + ev.to : String(ev.kind)}</span>
-            {ev.kind === 'compaction' && ev.savedChars ? <span style={{ opacity: 0.55, fontSize: 10 }}>释放 {Math.round(ev.savedChars / 1000)}k 字符</span> : null}
-            <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10 }}>{String(ev.at || '').slice(11, 16)}</span>
+            {ev.kind === 'compaction' && ev.savedChars ? <span style={{ opacity: 0.55, fontSize: 10, flex: 'none' }}>释放 {Math.round(ev.savedChars / 1000)}k 字符</span> : null}
+            <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10, flex: 'none' }}>{String(ev.at || '').slice(11, 16)}</span>
           </div>
-        )) : (
-          <div style={{ fontSize: 12, opacity: 0.55 }}>暂无事件（发生压缩 / 模型切换时自动出现）</div>
+        )) : (<div style={{ fontSize: 12, opacity: 0.55 }}>{t('events.empty')}</div>)) : (
+          <div style={{ fontSize: 12, opacity: 0.55 }}>{t('events.empty')}</div>
         )}
       </div>
 

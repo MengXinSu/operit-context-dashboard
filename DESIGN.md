@@ -297,10 +297,10 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 （展开）价格面板：今日花费 | 峰时时段输入 | 每模型峰/谷双价（自动保存）| 恢复默认价
 上下文统计：Donut（总量中各类占比）+ 图例
 当前上下文：≈X / 1.0M · Y%已用 + 1M 窗口条 + 明细九类 + 图片附件行（N 张 ≈X tokens）
-上下文浏览器：10 个可展开分类（系统提示词/技能注入/世界书/用户资料/对话总结/工具定义/用户消息/助手消息/工具结果/全部历史）
+上下文浏览器：10 个可展开分类（系统提示词/技能注入/世界书/用户资料/对话总结/工具定义（排序：大小·次数·名称，W5）/用户消息/助手消息/工具结果/全部历史）
 耗时统计：Donut（模型等待/模型生成/工具与开销）+ 图例（时长 + 百分比）
 趋势：堆叠柱（轮次聚合 + 全量/增量切换 + 图片段）；点柱详情 = 该轮占用条（StackedBar 铺满）+ 2 列颜色图例（各区块颜色区分，含图片段）
-世界书 · 本轮注入 / 上下文事件 / 文件活动（chips + 路径搜索 + 排序 + 展开操作日志）/ 工具使用
+世界书 · 本轮注入 / 上下文事件（chips 筛选 + 计数 + 最新在前，W5）/ 文件活动（chips + 路径搜索 + 排序 + 展开操作日志）/ 工具使用
 设置（折叠，默认收起）：趋势图默认粒度/展示方式 · 文件活动默认排序 · 工具定义默认排序（W4）
 ```
 
@@ -316,7 +316,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | 键 | 内容 | 说明 |
 |---|---|---|
 | `dsh-prices-v2` | 价格配置 `{peaks:[], weekdaysOnly, models:{name:{peak:{pin,pcache,pout},offpeak:{…}}}}` | 改价自动保存 |
-| `dsh-prefs-v1` | 用户偏好 `{granularity:'step'|'turn', mode:'total'|'delta', fileSort:'count'|'latest'|'path', toolSort:'size'|'count'|'name'}` | 各卡默认偏好（W4 设置卡；设置卡与卡内切换同源写回。granularity/mode=趋势，fileSort=文件卡已联动，toolSort 消费点见 W5） |
+| `dsh-prefs-v1` | 用户偏好 `{granularity:'step'|'turn', mode:'total'|'delta', fileSort:'count'|'latest'|'path', toolSort:'size'|'count'|'name'}` | 各卡默认偏好（W4 设置卡；设置卡与卡内切换同源写回。granularity/mode=趋势，fileSort=文件卡已联动，toolSort=浏览器工具定义排序，W5 已联动） |
 
 ### 5.6 交互细节
 
@@ -325,6 +325,8 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - 上下文浏览器条目：点击看全文（`rawItem`），分类头点击展开列表（`rawSection`）。
 - 文件卡操作行：点击 → 定位联动（W3）——自动滚到浏览器卡、打开「工具结果」、直达并展开对应条目；未命中在列表上方提示（结果已被压缩裁剪）。
 - - 趋势柱点击：详情卡显示该轮占用条（StackedBar 铺满）+ 2 列颜色图例（名称 ≈值 %），与「当前上下文」卡图例跨卡 hover 联动。
+- 上下文事件 chips（W5）：点击切换该 kind 显示（默认全选；全取消→空态）；行内 kind chip + 计数；列表最新在前。
+- 工具定义排序（W5）：浏览器「工具定义」分类内排序工具条（按大小/按次数/按名称），与设置卡同源（localStorage `dsh-prefs-v1`）。
 - 设置卡（W4）：底部折叠条（版本号条上方，默认收起）；展开四行偏好 chips（趋势粒度/展示方式、文件活动排序、工具定义排序）；改动即时生效 + localStorage 持久化；设置卡与各卡内切换按钮同源（同改同存）。
 - 深浅色：`data-ds-dark-theme` 属性切换 + `dsh_dark` 记忆。
 
@@ -376,6 +378,8 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 18. **`<error>` 判定必须锚定结构位置**（2026-09-16）：桥 v2 旧实现「全文扫 `<error>` 字样」判错——读自身文档（正文含 `<error>` 示例文本）时误标错误红点。已改：`status="error"` 或结果**开头** `\s*<content>\s*<error>` 锚定正则（宿主桥 2.2.1）。全库 46 份 raw 复算：err 条目 24→21，减掉的全是误报、余下全为真错。**教训：内容里会包含标记语法的文本（文档/代码/日志），标签判定只认结构锚点。**
 19. **定位联动的焦点页与分页基准**（2026-09-16，W3）：①「已加载直滚」快路径必须先查 `browser.data.items`（resultIdx、callIdx 两查）再决定是否重取；② focus 替换页后，旧「加载更多」按 `items.length` 算 offset 会**错位**——统一改 `data.offset + items.length`（普通路径桥也回传 offset）；③ `pendingFocus` 消费必须在 React commit 之后（useEffect 里、DOM ref 已挂载）再 `scrollIntoView`，在点击处理函数里直接滚会滚空；④ 迟到响应防串台用 `locateSeq` 序号（同 openSection / expandItem 守卫模式）。验证：`node tools/focus_check.js` 全库 47 份 raw / 1514 个锚点全部直达命中（含 miss 反例），`tools/w3_verify.cjs` mock 三场景 Pass。
 20. **设置卡（W4，2026-09-16）**：四项偏好 granularity/mode/fileSort/toolSort。设计决策：① 形态=底部（版本号条上方）折叠条、默认收起——初版置于顶部（头部卡后），2026-09-16 晚按梦新真机意见移至底部（低频设置不打扰首屏，亦贴近上游「设置页底部」语义）；② 选择交互用页面统一 chips（`.lc-gran-btn`）而非上游下拉菜单（无浮层组件问题、与外层控件同语言）；③ **写回语义=卡内切换也持久化**（与上游「卡内 mount-local 不回写」不同）——单机手机场景「上次选择保持」优于「每次回默认」，且设置卡与卡内按钮同源（一个 state）；④ fileSort 对文件卡**受控**（`FileCardProps.sort/onSortChange` 必传，App 持 state），设置改动即时联动；gran/mode 与趋势卡同理；⑤ **toolSort 消费点归 W5**（浏览器工具定义分类排序按钮），W4 只做持久化。验证：`tools/w4_verify.cjs`（Playwright+mock）14 检查全过，覆盖默认值/联动/刷新持久化。顺手修：fileCard `makeFileCard` 返回注解 `ReactElement→ReactNode`（memo 调用签名返回 ReactNode，tsc 的既有报错；vite build 不查类型所以一直未暴露）。**tsc 已知残余**：shared/types.ts 5 条上游类型引用报错（`../host/*`、`@deepseek-ai/*`，构建链不涉及，不修）。
+21. **事件卡筛选与 kind chips（W5，2026-09-16）**：chips 为多选 toggle（点击=切换该 kind 显示；默认全选；全部取消→空态），与文件卡 chips 语言一致；仅 compaction/model 两类（inject/prune/mode 无宿主数据源）；列表最新在前（上游 reverse 口径）。行内 kind chip 配色取上游 `.lc-kind-*`（base.css 新增三行）。
+22. **工具定义排序口径（W5，2026-09-16）**：`toolSort` 消费点在浏览器「工具定义」分类（size=chars 降序 / count=本会话调用次数降序（同次按名称）/ name=字母序）；行尾 `×N`=调用次数（toolUsage 同源）。上游 count 为「所示步 surface」内口径，我方取全会话（差异已记录，单机场景可接受）。
 
 ---
 
