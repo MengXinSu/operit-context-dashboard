@@ -46,6 +46,9 @@
 .lc-fa-op { display: flex; align-items: center; gap: 8px; min-width: 0; border: 0; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; padding: 3px 6px; text-align: left; border-radius: 5px; transition: background-color var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease-in-out); }
 .lc-fa-op-tool { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); }
 .lc-fa-op-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); }
+/* W3：操作行可点（定位联动）——手机无 hover，点击反馈走 :active。 */
+.lc-fa-op-loc { cursor: pointer; }
+.lc-fa-op-loc:hover, .lc-fa-op-loc:active { background: var(--dsw-alias-interactive-bg-hover); }
 .lc-fa-read { flex: none; color: var(--dsw-alias-brand-primary); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* ── 浏览器条目行的共享小件（browser 本身未移植，文件卡按需带出两件）── */
 .lc-br-chev { flex: none; width: 12px; height: 14px; display: flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-tertiary); }

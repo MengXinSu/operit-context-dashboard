@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DICT_ZH } from './client/i18n'
 import { makeViewKit } from './client/viewkit'
 import { makeStackedBar, makeLegend } from './client/components/stackedBar'
@@ -10,7 +10,7 @@ import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage,
   fetchTodayMessages, fetchSteps, type TodaySessionGroup,
-  type MessageItem, type RawSectionData, type FileActivityData,
+  type MessageItem, type RawSectionData, type FileActivityData, type FileActivityOp,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord } from './shared/types'
 
@@ -155,6 +155,8 @@ type BrowserState = {
   expanded: Record<number, string>
   expanding: number | null
   loadingMore?: boolean
+  /** W3：定位未命中时的一次性提示（打开分类 / 成功定位时清除）。 */
+  notice?: string
 }
 
 const BROWSER_CATS: { key: string; label: string; color: string }[] = [
@@ -235,8 +237,15 @@ export function App() {
     updatePriceCfg({ ...priceCfg, peaks: priceCfg.peaks.map((sp, j) => (j === i ? { ...sp, [k]: v } : sp)) })
   }
   const offpeakNow = isOffpeakAt(priceCfg, new Date())
-  const [browser, setBrowser] = useState<BrowserState>({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
+  const [browser, setBrowser] = useState<BrowserState>({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '' })
   const [hoverTiming, setHoverTiming] = useState<string | null>(null)
+  // W3 定位联动：浏览器卡锚点、条目 ref 表、browser 镜像（供稳定回调读 latest）、定位序号（迟到响应防串台）。
+  const browserCardRef = useRef<HTMLDivElement | null>(null)
+  const itemRefs = useRef<Record<number, HTMLElement | null>>({})
+  const browserRef = useRef(browser)
+  useEffect(() => { browserRef.current = browser }, [browser])
+  const locateSeq = useRef(0)
+  const [pendingFocus, setPendingFocus] = useState<{ idx: number } | null>(null)
 
   useEffect(() => {
     if (dark) document.body.setAttribute('data-ds-dark-theme', '')
@@ -252,7 +261,7 @@ export function App() {
         return
       }
       setState({ phase: 'loading' })
-      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
+      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '' })
       const [sum, tl, msgs, evs, fa, tu, tm, st] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages(), fetchSteps()])
       if (!alive) return
       if (!sum || !sum.ok || !sum.current) {
@@ -394,10 +403,10 @@ export function App() {
 
   async function openSection(cat: string, label: string) {
     if (browser.cat === cat) {
-      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null })
+      setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '' })
       return
     }
-    setBrowser({ cat, label, data: null, loading: true, error: '', expanded: {}, expanding: null })
+    setBrowser({ cat, label, data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '' })
     const d = await fetchRawSection(cat, 0, 30)
     setBrowser((b) => b.cat === cat ? { ...b, data: d, loading: false, error: d && d.ok ? '' : ((d && (d as any).error) || '读取失败') } : b)
   }
@@ -407,7 +416,7 @@ export function App() {
     if (!b.cat || !b.data || !b.data.items) return
     if (b.loadingMore) return // 防重入：连点会重复追加同一段
     setBrowser((prev) => ({ ...prev, loadingMore: true }))
-    const more = await fetchRawSection(b.cat, b.data.items.length, 30)
+    const more = await fetchRawSection(b.cat, (b.data.offset || 0) + b.data.items.length, 30)
     setBrowser((prev) => {
       if (prev.cat !== b.cat || !prev.data) return { ...prev, loadingMore: false }
       const items = (more && more.ok && more.items) ? [...(prev.data.items || []), ...more.items] : prev.data.items
@@ -432,6 +441,51 @@ export function App() {
     // 迟到响应防串台：分类没变才写入（与 openSection 的守卫同款）
     setBrowser((b) => b.cat !== catAtReq ? b : ({ ...b, expanding: null, expanded: item && item.ok && item.content !== undefined ? { ...b.expanded, [idx]: item.content } : b.expanded }))
   }
+
+  // W3 定位联动：点文件卡操作行 → 打开「工具结果」分类，把对应条目滚入视野并展开。
+  // 快路径：目标已在当前列表 → 零网络直达；否则桥 focus 一页直达（返回含锚点的页）。
+  // 失败分支：result / call 两个锚点都未命中 → notice 提示（可能已被压缩裁剪）。
+  const locateOp = useCallback(async (op: FileActivityOp) => {
+    const seq = ++locateSeq.current
+    try { browserCardRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }) } catch (e) { /* 忽略：滚动失败不阻断定位 */ }
+    const b0 = browserRef.current
+    if (b0.cat === 'tool' && b0.data && b0.data.items) {
+      if (b0.data.items.some(it => it.idx === op.resultIdx)) { setPendingFocus({ idx: op.resultIdx }); return }
+      if (b0.data.items.some(it => it.idx === op.callIdx)) { setPendingFocus({ idx: op.callIdx }); return }
+    }
+    setBrowser((b) => b.cat === 'tool'
+      ? { ...b, loading: true, notice: '' }
+      : { cat: 'tool', label: '工具结果', data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '' })
+    const targets = op.resultIdx === op.callIdx ? [op.resultIdx] : [op.resultIdx, op.callIdx]
+    for (const t of targets) {
+      const d = await fetchRawSection('tool', 0, 30, t)
+      if (seq !== locateSeq.current) return // 新一次定位已发起：放弃迟到响应
+      const hit = !!(d && d.ok && d.items && d.items.some(it => it.idx === t))
+      if (hit) {
+        setBrowser((b) => b.cat !== 'tool' ? b : { ...b, data: d, loading: false, error: '', notice: '' })
+        setPendingFocus({ idx: t })
+        return
+      }
+    }
+    if (seq !== locateSeq.current) return
+    setBrowser((b) => b.cat !== 'tool' ? b : { ...b, loading: false, notice: '未找到对应结果（可能已被压缩裁剪）' })
+  }, [])
+
+  // pendingFocus 消费：目标条目已在列表 → 展开（如未展开）+ 滚入视野，然后清空。
+  useEffect(() => {
+    if (!pendingFocus) return
+    const items = browser.cat === 'tool' && browser.data ? browser.data.items : undefined
+    if (!items || !items.some(it => it.idx === pendingFocus.idx)) return
+    const idx = pendingFocus.idx
+    if (browser.expanded[idx] === undefined && browser.expanding !== idx) {
+      void expandItem(idx)
+    }
+    const el = itemRefs.current[idx]
+    if (el) {
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }) } catch (e) { try { el.scrollIntoView() } catch (e2) { /* 忽略 */ } }
+    }
+    setPendingFocus(null)
+  }, [pendingFocus, browser])
 
   return (
     <div className="lc-root" style={{ maxWidth: 600, margin: '0 auto', minHeight: '100vh' }}>
@@ -537,7 +591,7 @@ export function App() {
           <div style={{ fontSize: 10, opacity: 0.6, marginTop: 6, textAlign: 'center' }}>图片附件 {state.imgAtt.count} 张 ≈{state.imgAtt.tokens} tokens（按官方图片计费公式估算）</div>
         ) : null}
       </div>
-      <div className="lc-card">
+      <div className="lc-card" ref={browserCardRef}>
         <div className="lc-card-title">
           <span className="lc-card-title-text">上下文浏览器</span>
           <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>点分类展开 · 点条目看全文</span>
@@ -559,6 +613,7 @@ export function App() {
               </div>
               {isOpen ? (
                 <div style={{ padding: '4px 0 8px 15px' }}>
+                  {browser.notice ? <div style={{ fontSize: 11, color: 'var(--dsw-alias-state-warn-primary)', padding: '2px 0 6px' }}>{browser.notice}</div> : null}
                   {browser.loading ? (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>读取中…</div>
                   ) : browser.error ? (
@@ -568,7 +623,7 @@ export function App() {
                   ) : browser.data && browser.data.items && browser.data.items.length > 0 ? (
                     <div>
                       {browser.data.items.map((it) => (
-                        <div key={it.idx} onClick={() => expandItem(it.idx)} style={{ padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer' }}>
+                        <div key={it.idx} ref={(el) => { itemRefs.current[it.idx] = el }} onClick={() => expandItem(it.idx)} style={{ padding: '7px 2px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer' }}>
                           <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 12 }}>
                             <span style={{ flex: 'none', fontSize: 10, opacity: 0.8, background: 'var(--dsw-alias-bg-layer-2)', padding: '1px 5px', borderRadius: 4 }}>{kindLabel(it.kind)}</span>
                             {it.toolName || it.name ? <b style={{ fontWeight: 600 }}>{it.toolName || it.name}</b> : null}
@@ -732,6 +787,7 @@ export function App() {
         loading={state.phase === 'loading'}
         failed={state.phase === 'error'}
         onRetry={() => { try { location.reload() } catch (e) { setRefreshN(refreshN + 1) } }}
+        onLocate={locateOp}
       />
 
       <div className="lc-card">

@@ -1138,6 +1138,19 @@ function fa2Compute(hist) {
   items.sort(function (a, b) { return b.count - a.count; });
   return { entries: agg.entries, totals: agg.totals, stats: stats, legacyItems: items.slice(0, 60) };
 }
+/**
+ * W3 定位联动：锚点下标 → 含锚点的页参数（纯函数，供 apiRawSection 与离线自检共用）。
+ * revIdxs = 倒序（最新在前）的 idx 数组；lim = 页大小。
+ * 返回 null = 未传 focus；{miss:true, idx} = 未命中；{offset, pos, idx} = 命中页起点。
+ */
+function fa2FocusPage(revIdxs, focusIdx, lim) {
+  var fo = (focusIdx === undefined || focusIdx === null || focusIdx === "") ? -1 : parseInt(String(focusIdx), 10);
+  if (fo < 0) return null;
+  for (var q = 0; q < revIdxs.length; q++) {
+    if (revIdxs[q] === fo) return { offset: Math.floor(q / lim) * lim, pos: q, idx: fo };
+  }
+  return { miss: true, idx: fo };
+}
 // ==== FILE_ACTIVITY_V2 END ====
 
 /** 文件活动：从 raw 的 TOOL_CALL / TOOL_RESULT 解析文件操作记录（v2：op 级 + 配对 + 聚合；零新增写入） */
@@ -1202,7 +1215,7 @@ async function apiMessages(keyIn) {
 }
 
 /** 浏览器下钻：按分类取内容（system/worldbook 全文；tools/消息类列表分页） */
-async function apiRawSection(keyIn, section, offset, limit) {
+async function apiRawSection(keyIn, section, offset, limit, focusIdx) {
   var key = keyIn || await latestKey();
   var payload = await loadRaw(key);
   if (!payload) return { ok: false, error: "raw 解析失败" };
@@ -1270,7 +1283,13 @@ async function apiRawSection(keyIn, section, offset, limit) {
   }
   var total = picked.length;
   var rev = picked.slice().reverse();
-  return { ok: true, kind: "list", total: total, items: rev.slice(off, off + lim) };
+  // W3 focus：锚点（preparedHistory 下标）→ 含锚点的页一页直达；未命中回 focusMiss
+  var fr = fa2FocusPage(rev.map(function (x) { return x.idx; }), focusIdx, lim);
+  if (fr !== null) {
+    if (fr.miss) return { ok: true, kind: "list", total: total, items: [], focusMiss: true, focusIdx: fr.idx };
+    return { ok: true, kind: "list", total: total, offset: fr.offset, items: rev.slice(fr.offset, fr.offset + lim), focusIdx: fr.idx };
+  }
+  return { ok: true, kind: "list", total: total, offset: off, items: rev.slice(off, off + lim) };
 }
 
 /** 浏览器下钻：按原始 index 取单条全文 */
@@ -1337,7 +1356,7 @@ function Screen(ctx) {
           else if (method === "toolUsage") out = await apiToolUsage(key);
           else if (method === "messages") out = await apiMessages(key);
           else if (method === "todayMessages") out = await apiTodayMessages();
-          else if (method === "rawSection") out = await apiRawSection(key, req.section, req.offset, req.limit);
+          else if (method === "rawSection") out = await apiRawSection(key, req.section, req.offset, req.limit, req.focusIdx);
           else if (method === "rawItem") out = await apiRawItem(key, req.index);
           else out = { ok: false, error: "unknown method: " + method };
           hostLog({ dir: "api", at: nowIso(), method: method, key: key, ms: Date.now() - t0, ok: !!(out && out.ok) });

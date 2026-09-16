@@ -79,11 +79,17 @@ export interface RawSectionData {
   names?: string[]
   content?: string
   items?: RawListItem[]
+  /** 本页在倒序（最新在前）列表中的起点；普通分页与 focus 直达共用（W3）。 */
+  offset?: number
+  /** focus 直达：命中的锚点（preparedHistory 下标）；用于判定命中与否。 */
+  focusIdx?: number
+  /** focus 直达未命中：锚点不在此范围内（已被压缩裁剪等）。 */
+  focusMiss?: boolean
   error?: string
 }
 
-export async function fetchRawSection(section: string, offset = 0, limit = 30): Promise<RawSectionData | null> {
-  return call<RawSectionData>('rawSection', { section, offset, limit })
+export async function fetchRawSection(section: string, offset = 0, limit = 30, focusIdx?: number): Promise<RawSectionData | null> {
+  return call<RawSectionData>('rawSection', Object.assign({ section, offset, limit }, focusIdx === undefined ? {} : { focusIdx }))
 }
 
 export async function fetchRawItem(index: number): Promise<{ ok: boolean; content?: string; kind?: string; toolName?: string; error?: string } | null> {

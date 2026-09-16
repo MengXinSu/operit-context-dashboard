@@ -217,7 +217,7 @@ return JSON.parse(r);
 | `events` | 上下文事件（压缩点/模型切换） | `{ok, items:[…]}` |
 | `fileActivity` | 文件活动聚合（v2：op 级 + 按路径聚合 + 锚点） | `{ok, total, entries:[{path,form,reads,writes,searches,added,removed,errs,ops:[{seq,kind,tool,path,added,removed,err,callIdx,resultIdx,read?,hits?,detail?,pattern?}],pattern?}], totals:{read/write/search/image:{files,ops},added,removed}, stats, items(legacy)}` |
 | `toolUsage` | 工具调用统计 | `{ok, items:[…]}` |
-| `rawSection` / `rawItem` | 上下文浏览器：分类列表 / 条目全文 | `{ok, kind, items/content, …}` |
+| `rawSection` / `rawItem` | 上下文浏览器：分类列表 / 条目全文；`rawSection` 第 5 参 `focusIdx`=定位锚点（见 §4.3-⑩） | `{ok, kind, items/content, offset?, focusIdx?, focusMiss?, …}` |
 | `todayMessages` | 跨会话「今天」的分组数据（今日花费） | `{ok, groups:[{session, base:{input,output,cached}, items:[…]}]}` |
 
 ### 4.3 关键算法（全部在前端或桥层实现）
@@ -265,6 +265,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 **⑧ raw 解析三件套**（重要坑）：文件内容是「折断过的 JSON」——解析顺序：① `text.replace(/\n/g,'')`（去真换行）② `JSON.parse(text, strict:false)`（容错非法控制字符/转义）③ 失败再尝试逐行容错。
 
 **⑨ 快照 sys 回填（历史数据兼容）**：旧快照没有 `sys` 字段时——当全会话 SYSTEM 字符数恒定、且与当前 raw 中 SYSTEM 长度接近（±200）时，从 raw 提取 wb/sk/up 三个拆分值补齐。
+**⑩ 定位锚点（W3，2026-09-16）**：`apiRawSection(key, section, offset, limit, focusIdx)`——`focusIdx` 为 preparedHistory 下标；命中 → 返回**含锚点的页**（回传 `offset`=页起点、`focusIdx`）；未命中 → `{items:[], focusMiss:true}`。页计算由纯函数 `fa2FocusPage(revIdxs, focusIdx, lim)` 完成（定义在 FILE_ACTIVITY_V2 段内，桥与 `tools/focus_check.js` 共用同一实现），倒序列表（最新在前）中 `offset = floor(pos/lim)*lim`。普通分页路径也回传 `offset`，前端「加载更多」以 `data.offset + items.length` 为基准（focus 页替换后分页不断链）。前端 `locateOp`：已加载直滚（零网络）→ `focusIdx` 一页直达 → result/call 双锚点回退 → `notice` 提示；`pendingFocus` 在 useEffect 消费（commit 后展开 + scrollIntoView）。锚点：`op.resultIdx`=配对上的 TOOL_RESULT 下标，`op.callIdx`=TOOL_CALL 下标。
 
 ---
 
@@ -284,7 +285,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | `donut` | 环形图（构成/耗时） | 段→弧换算、中心大字 + 小字、hover 高亮（`hoverKey/onHoverKey`） |
 | `trendChart` | 逐轮堆叠柱趋势 | 自适应 y 轴、轮次聚合（「步骤/轮次」切换保留：轮次=快照聚合，步骤=宿主从 raw 事后重建——快照每轮 1 条，无独立步骤数据，见坑 13）、全量/增量模式、选中/悬停联动、图片段（第十段，`img > 0` 时，见坑 16） |
 | `legend` | 图例行 | 色点 + 名称 + 值，与条/环共享 hoverKey |
-| `fileCard` | 文件活动卡（2026-09-16） | 上游形态：chips 筛选（五类+计数）、路径搜索、排序（次数/最新/路径）、meta 条（文件数 + 总 delta + 气泡说明）、文件行（form 图标/完整路径/徽章/delta/错误点）、点行展开操作日志（树轨）；窄屏折行走容器查询；时间显示与定位联动留待后续窗口 |
+| `fileCard` | 文件活动卡（2026-09-16） | 上游形态：chips 筛选（五类+计数）、路径搜索、排序（次数/最新/路径）、meta 条（文件数 + 总 delta + 气泡说明）、文件行（form 图标/完整路径/徽章/delta/错误点）、点行展开操作日志（树轨）；窄屏折行走容器查询；操作行点击→定位联动（W3，2026-09-16）；时间显示留待后续窗口 |
 | `viewkit` | 工具包（t/fmt/catLabel 等注入） | 所有组件通过 make*(kit) 工厂创建 |
 
 ### 5.3 页面卡片与顺序（最终验收版）
@@ -321,6 +322,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - 花费格：点击 → 展开/收起价格面板；徽章实时显示当前时段（谷=绿 / 峰=橙）。
 - 工具/消息条目：点击展开 → 再点收起（toggle）。
 - 上下文浏览器条目：点击看全文（`rawItem`），分类头点击展开列表（`rawSection`）。
+- 文件卡操作行：点击 → 定位联动（W3）——自动滚到浏览器卡、打开「工具结果」、直达并展开对应条目；未命中在列表上方提示（结果已被压缩裁剪）。
 - - 趋势柱点击：详情卡显示该轮占用条（StackedBar 铺满）+ 2 列颜色图例（名称 ≈值 %），与「当前上下文」卡图例跨卡 hover 联动。
 - 深浅色：`data-ds-dark-theme` 属性切换 + `dsh_dark` 记忆。
 
@@ -370,6 +372,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 16. **趋势图「图片段」数据链路**（2026-09-15 晚）：快照只记文本字符构成，图片 token 进不了趋势图（原待办②）。已实现方案：采集层 `collectSnapshot` 增 `imgPaths` 字段（扫 `preparedHistory` 里 `<attachment ... type="image...>` 的 id，去重，**只存路径、钩子零 IO**）；桥层 `apiTimeline` 用 `imgTokensOfPath`（含 `IMG_TOKEN_CACHE`）逐路径估算（复用 `imageSizeOf`/`estimateImageTokens`，文件读不到按 350/张），rec 补 `img`/`imgCount` 并计入 `total` 与 96 万上限保护（`anchorTo` keys 加 `"img"`）；前端趋势图按「第十段」渲染（stacked / delta 双向 arms / adaptive 缩放全链路，色 `IMG_COLOR`），详情卡加「图片」项，CSS 补 `data-catdim='img'` re-light 行。口径与「当前上下文」卡完全一致。**限制**：旧快照无 `imgPaths` → 旧轮无图片段（只能从部署后积累）；采集侧只记「留存窗口内」的附件（压缩后自动收缩）。。
 17. **宿主 AI 的 edit_file 是「AI 式模糊匹配」**（2026-09-16）：old 块起止边界模糊时会**吞掉中间行或残留尾巴**（bridge.ts 实测被吞 2 处、残留 2 行）。大块精确改动用 `python str.replace`（先 `count==1` 断言）+ 脚本化写入，或整文件重写；每次编辑后必须跑语法/构建校验（esbuild / node --check / fa_check）。
 18. **`<error>` 判定必须锚定结构位置**（2026-09-16）：桥 v2 旧实现「全文扫 `<error>` 字样」判错——读自身文档（正文含 `<error>` 示例文本）时误标错误红点。已改：`status="error"` 或结果**开头** `\s*<content>\s*<error>` 锚定正则（宿主桥 2.2.1）。全库 46 份 raw 复算：err 条目 24→21，减掉的全是误报、余下全为真错。**教训：内容里会包含标记语法的文本（文档/代码/日志），标签判定只认结构锚点。**
+19. **定位联动的焦点页与分页基准**（2026-09-16，W3）：①「已加载直滚」快路径必须先查 `browser.data.items`（resultIdx、callIdx 两查）再决定是否重取；② focus 替换页后，旧「加载更多」按 `items.length` 算 offset 会**错位**——统一改 `data.offset + items.length`（普通路径桥也回传 offset）；③ `pendingFocus` 消费必须在 React commit 之后（useEffect 里、DOM ref 已挂载）再 `scrollIntoView`，在点击处理函数里直接滚会滚空；④ 迟到响应防串台用 `locateSeq` 序号（同 openSection / expandItem 守卫模式）。验证：`node tools/focus_check.js` 全库 47 份 raw / 1514 个锚点全部直达命中（含 miss 反例），`tools/w3_verify.cjs` mock 三场景 Pass。
 
 ---
 
@@ -427,7 +430,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - [ ] 构建单文件并部署到 preview/，真机验收
 
 **Stage 5 · 打磨与发布**
-- [ ] 回归检查：工具点击/收起、世界书显示、费用单位（¥）、峰谷徽章、图片附件行、趋势图片段、1M 窗口条、耗时环
+- [ ] 回归检查：工具点击/收起、世界书显示、费用单位（¥）、峰谷徽章、图片附件行、趋势图片段、1M 窗口条、耗时环、文件卡操作行定位联动（W3）
 - [ ] 自检脚本：图片公式七个官方样本全过
 - [ ] 开源合规：LICENSE（Apache-2.0）+ THIRD_PARTY_NOTICES + README 致谢上游（bowenliang123/dsh-context）与 DeepSeek 主题（MIT）
 - [ ] 隐私检查：无个人路径/密钥/用户名残留

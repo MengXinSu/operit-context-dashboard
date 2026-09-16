@@ -6,8 +6,8 @@
  * 按路径过滤；点行展开该文件自己的操作日志（树轨）。
  *
  * Operit 移植差异：无 workspace 相对化（路径即绝对路径，完整显示换行）；无右栏
- * 预览 / 系统打开（文件名不可点）；操作行暂不可点（定位联动归 W3）；无时间显示
- * （raw 无时间戳，归 W6 决策）。
+ * 预览 / 系统打开（文件名不可点）；无时间显示（raw 无时间戳，归 W6 决策）。
+ * W3：操作行可点（onLocate）→ 浏览器展开对应工具结果。
  */
 import { memo, useState, type ChangeEvent, type ReactElement } from 'react'
 import { EMPTY_FA_TOTALS, type FileActivityData, type FileActivityEntry, type FileActivityOp } from '../../data/bridge'
@@ -24,6 +24,8 @@ export interface FileCardProps {
   failed?: boolean
   /** 失败重试；缺省时失败态只显示纯文本。 */
   onRetry?: () => void
+  /** W3 定位联动：点操作行 → 浏览器展开对应工具结果；缺省时操作行不可点。 */
+  onLocate?: (op: FileActivityOp) => void
 }
 
 // ── 行图标（移植上游 fileActivity.ts 的 glyphOf：目录桶 / 扩展名桶 / 语言色卡）──
@@ -344,7 +346,12 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactEleme
                         <div className="lc-fa-ops">
                           {e.ops.map((op, i) => (
                             // 元数据归属的搜索会从一条结果里按命中文件逐行——ops 共享该结果的 seq，key 带上序号。
-                            <div key={`${op.seq}:${i}`} className="lc-fa-op">{opLine(op)}</div>
+                            <div
+                              key={`${op.seq}:${i}`}
+                              className={'lc-fa-op' + (props.onLocate ? ' lc-fa-op-loc' : '')}
+                              role={props.onLocate ? 'button' : undefined}
+                              onClick={props.onLocate ? () => { props.onLocate!(op) } : undefined}
+                            >{opLine(op)}</div>
                           ))}
                         </div>
                       ) : null}
