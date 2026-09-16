@@ -512,52 +512,6 @@ export function App() {
         <button className="lc-gran-btn" onClick={() => setDark(!dark)}>{dark ? '浅色' : '深色'}</button>
       </div>
 
-      <div className="lc-card">
-        <button type="button" className="lc-settings-head" aria-expanded={settingsOpen} onClick={() => { setSettingsOpen(!settingsOpen) }}>
-          <span className="lc-settings-headtext">
-            <span className="lc-settings-name">{t('settings.title')}</span>
-            <span className="lc-settings-desc">{t('settings.desc')}</span>
-          </span>
-          <span className={'lc-br-chev' + (settingsOpen ? ' lc-br-chev-on' : '')} />
-        </button>
-        {settingsOpen ? (
-          <div className="lc-settings-body">
-            <div className="lc-settings-row">
-              <span className="lc-settings-label">{t('settings.gran')}</span>
-              <span className="lc-gran" role="group">
-                {(['step', 'turn'] as const).map(k => (
-                  <button key={k} type="button" className={'lc-gran-btn' + (granularity === k ? ' lc-gran-on' : '')} onClick={() => pickGran(k)}>{t('gran.' + k)}</button>
-                ))}
-              </span>
-            </div>
-            <div className="lc-settings-row">
-              <span className="lc-settings-label">{t('settings.mode')}</span>
-              <span className="lc-gran" role="group">
-                {(['total', 'delta'] as const).map(k => (
-                  <button key={k} type="button" className={'lc-gran-btn' + (mode === k ? ' lc-gran-on' : '')} onClick={() => pickMode(k)}>{t('gran.' + k)}</button>
-                ))}
-              </span>
-            </div>
-            <div className="lc-settings-row">
-              <span className="lc-settings-label">{t('settings.fileSort')}</span>
-              <span className="lc-gran" role="group">
-                {(['count', 'latest', 'path'] as const).map(k => (
-                  <button key={k} type="button" className={'lc-gran-btn' + (fileSort === k ? ' lc-gran-on' : '')} onClick={() => pickFileSort(k)}>{t('files.sort.' + k)}</button>
-                ))}
-              </span>
-            </div>
-            <div className="lc-settings-row">
-              <span className="lc-settings-label">{t('settings.toolSort')}</span>
-              <span className="lc-gran" role="group">
-                {(['size', 'count', 'name'] as const).map(k => (
-                  <button key={k} type="button" className={'lc-gran-btn' + (toolSort === k ? ' lc-gran-on' : '')} onClick={() => pickToolSort(k)}>{t('tool.sort.' + k)}</button>
-                ))}
-              </span>
-            </div>
-          </div>
-        ) : null}
-      </div>
-
       <div className="lc-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, textAlign: 'center' }}>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.turnCount}</div><div style={{ fontSize: 10, opacity: 0.65 }}>轮次</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.steps}</div><div style={{ fontSize: 10, opacity: 0.65 }}>步骤</div></div>
@@ -864,6 +818,52 @@ export function App() {
         ) : (
           <div style={{ fontSize: 12, opacity: 0.55 }}>暂无工具调用记录</div>
         )}
+      </div>
+
+      <div className="lc-card">
+        <button type="button" className="lc-settings-head" aria-expanded={settingsOpen} onClick={() => { setSettingsOpen(!settingsOpen) }}>
+          <span className="lc-settings-headtext">
+            <span className="lc-settings-name">{t('settings.title')}</span>
+            <span className="lc-settings-desc">{t('settings.desc')}</span>
+          </span>
+          <span className={'lc-br-chev' + (settingsOpen ? ' lc-br-chev-on' : '')} />
+        </button>
+        {settingsOpen ? (
+          <div className="lc-settings-body">
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.gran')}</span>
+              <span className="lc-gran" role="group">
+                {(['step', 'turn'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (granularity === k ? ' lc-gran-on' : '')} onClick={() => pickGran(k)}>{t('gran.' + k)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.mode')}</span>
+              <span className="lc-gran" role="group">
+                {(['total', 'delta'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (mode === k ? ' lc-gran-on' : '')} onClick={() => pickMode(k)}>{t('gran.' + k)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.fileSort')}</span>
+              <span className="lc-gran" role="group">
+                {(['count', 'latest', 'path'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (fileSort === k ? ' lc-gran-on' : '')} onClick={() => pickFileSort(k)}>{t('files.sort.' + k)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.toolSort')}</span>
+              <span className="lc-gran" role="group">
+                {(['size', 'count', 'name'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (toolSort === k ? ' lc-gran-on' : '')} onClick={() => pickToolSort(k)}>{t('tool.sort.' + k)}</button>
+                ))}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="lc-card" style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 }}>
