@@ -1,6 +1,6 @@
 # 上下文仪表盘（Operit ToolPkg）· 完整设计与重建指南
 
-> 版本：2026-09-16 · 适用于 Operit（Android）ToolPkg 插件系统
+> 版本：2026-09-16（W6 更新 2026-09-17）· 适用于 Operit（Android）ToolPkg 插件系统
 > 上游参考：bowenliang123/dsh-context（Apache-2.0，DeepSeek Harness 插件，本项目的设计蓝本）
 > 本文档目标：让任何 AI 依据本文即可从零重建整个插件（采集层 + 数据层 + UI 层 + 前端页面）。
 
@@ -215,10 +215,11 @@ return JSON.parse(r);
 | `timeline` | 逐轮上下文构成（趋势图数据） | `{ok, items:[{seq,turn,step,t,system,tools,user,inject,skill,summary,assistant,tool,total,historyCount}]}` |
 | `messages` | 当前会话消息级 usage 列表 | `{ok, items:[{t,sentAt,input,output,cached,waitMs,outMs,roleName,model}]}` |
 | `events` | 上下文事件（压缩点/模型切换） | `{ok, items:[…]}` |
-| `fileActivity` | 文件活动聚合（v2：op 级 + 按路径聚合 + 锚点） | `{ok, total, entries:[{path,form,reads,writes,searches,added,removed,errs,ops:[{seq,kind,tool,path,added,removed,err,callIdx,resultIdx,read?,hits?,detail?,pattern?}],pattern?}], totals:{read/write/search/image:{files,ops},added,removed}, stats, items(legacy)}` |
+| `fileActivity` | 文件活动聚合（v2：op 级 + 按路径聚合 + 锚点） | `{ok, total, entries:[{path,form,reads,writes,searches,added,removed,errs,ops:[{seq,kind,tool,path,added,removed,err,callIdx,resultIdx,read?,hits?,detail?,pattern?}],pattern?}], totals:{read/write/search/image:{files,ops},added,removed}, stats, items(legacy), userIdx:[…]（W6：窗口 USER 锚点，scope 过滤用）}` |
 | `toolUsage` | 工具调用统计 | `{ok, items:[…]}` |
 | `rawSection` / `rawItem` | 上下文浏览器：分类列表 / 条目全文；`rawSection` 第 5 参 `focusIdx`=定位锚点（见 §4.3-⑩） | `{ok, kind, items/content, offset?, focusIdx?, focusMiss?, …}` |
 | `todayMessages` | 跨会话「今天」的分组数据（今日花费） | `{ok, groups:[{session, base:{input,output,cached}, items:[…]}]}` |
+| `openPath` | 文件名打开（W6）：宿主 `Tools.Files.open` 系统打开 | `{ok, path, details, data}` / `{ok:false, error}` |
 
 ### 4.3 关键算法（全部在前端或桥层实现）
 
@@ -285,7 +286,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | `donut` | 环形图（构成/耗时） | 段→弧换算、中心大字 + 小字、hover 高亮（`hoverKey/onHoverKey`） |
 | `trendChart` | 逐轮堆叠柱趋势 | 自适应 y 轴、轮次聚合（「步骤/轮次」切换保留：轮次=快照聚合，步骤=宿主从 raw 事后重建——快照每轮 1 条，无独立步骤数据，见坑 13）、全量/增量模式、选中/悬停联动、图片段（第十段，`img > 0` 时，见坑 16） |
 | `legend` | 图例行 | 色点 + 名称 + 值，与条/环共享 hoverKey |
-| `fileCard` | 文件活动卡（2026-09-16） | 上游形态：chips 筛选（五类+计数）、路径搜索、排序（次数/最新/路径）、meta 条（文件数 + 总 delta + 气泡说明）、文件行（form 图标/完整路径/徽章/delta/错误点）、点行展开操作日志（树轨）；窄屏折行走容器查询；操作行点击→定位联动（W3，2026-09-16）；时间显示留待后续窗口 |
+| `fileCard` | 文件活动卡（2026-09-16） | 上游形态：chips 筛选（五类+计数）、路径搜索、排序（次数/最新/路径）、meta 条（文件数 + 总 delta + 气泡说明）、文件行（form 图标/完整路径/徽章/delta/错误点）、点行展开操作日志（树轨）；窄屏折行走容器查询；操作行点击→定位联动（W3）；scope 跟随趋势选择 + 行尾时间 + 文件名打开（W6，2026-09-17） |
 | `viewkit` | 工具包（t/fmt/catLabel 等注入） | 所有组件通过 make*(kit) 工厂创建 |
 
 ### 5.3 页面卡片与顺序（最终验收版）
@@ -300,7 +301,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 上下文浏览器：10 个可展开分类（系统提示词/技能注入/世界书/用户资料/对话总结/工具定义（排序：大小·次数·名称，W5）/用户消息/助手消息/工具结果/全部历史）
 耗时统计：Donut（模型等待/模型生成/工具与开销）+ 图例（时长 + 百分比）
 趋势：堆叠柱（轮次聚合 + 全量/增量切换 + 图片段）；点柱详情 = 该轮占用条（StackedBar 铺满）+ 2 列颜色图例（各区块颜色区分，含图片段）
-世界书 · 本轮注入 / 上下文事件（chips 筛选 + 计数 + 最新在前，W5）/ 文件活动（chips + 路径搜索 + 排序 + 展开操作日志）/ 工具使用
+世界书 · 本轮注入 / 上下文事件（chips 筛选 + 计数 + 最新在前，W5）/ 文件活动（chips + 路径搜索 + 排序 + 展开操作日志 + scope 跟随 + 行尾时间 + 文件名打开，W6）/ 工具使用
 设置（折叠，默认收起）：趋势图默认粒度/展示方式 · 文件活动默认排序 · 工具定义默认排序（W4）
 ```
 
@@ -324,11 +325,14 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - 工具/消息条目：点击展开 → 再点收起（toggle）。
 - 上下文浏览器条目：点击看全文（`rawItem`），分类头点击展开列表（`rawSection`）。
 - 文件卡操作行：点击 → 定位联动（W3）——自动滚到浏览器卡、打开「工具结果」、直达并展开对应条目；未命中在列表上方提示（结果已被压缩裁剪）。
-- - 趋势柱点击：详情卡显示该轮占用条（StackedBar 铺满）+ 2 列颜色图例（名称 ≈值 %），与「当前上下文」卡图例跨卡 hover 联动。
+- 趋势柱点击：详情卡显示该轮占用条（StackedBar 铺满）+ 2 列颜色图例（名称 ≈值 %），与「当前上下文」卡图例跨卡 hover 联动。
 - 上下文事件 chips（W5）：点击切换该 kind 显示（默认全选；全取消→空态）；行内 kind chip + 计数；列表最新在前。
 - 工具定义排序（W5）：浏览器「工具定义」分类内排序工具条（按大小/按次数/按名称），与设置卡同源（localStorage `dsh-prefs-v1`）。
 - 浏览器条目展开（W5.1）：超 1200 字符渐进展开——先 1200 预览 +「展开全部」按钮（已阅全文后按钮变「收起」回预览）。
 - 设置卡（W4）：底部折叠条（版本号条上方，默认收起）；展开四行偏好 chips（趋势粒度/展示方式、文件活动排序、工具定义排序）；改动即时生效 + localStorage 持久化；设置卡与各卡内切换按钮同源（同改同存）。
+- 文件卡 scope（W6）：副标题跟随趋势图选择（默认「截至最新 · 跟随趋势图的选择」）；数据范围按选中轮过滤（重聚合），选中轮早于数据窗口时显示提示。
+- 文件卡时间（W6）：文件行/操作行右缘显示该操作所在轮的时间（HH:MM:SS；无映射「—」）。
+- 文件名打开（W6）：文件名可点（点状下划线）→ 宿主 `Tools.Files.open` 系统打开；失败顶部 flash 条提示（自动消失）。
 - 深浅色：`data-ds-dark-theme` 属性切换 + `dsh_dark` 记忆。
 
 ---
@@ -384,6 +388,9 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 23. **浏览器条目全文渐进展开（W5.1，2026-09-17）**：真机反馈「工具结果展开太长」——展开 >1200 字符先给 1200 预览 +「展开全部（N字符）」按钮（`TextPreview` limit 参数化，默认 4000 供 system/summary 分类）；按钮 `stopPropagation` 防触发条目 toggle。验证：w5_verify 6a-6c。
 24. **浏览器列表密度迭代（W5.2→W5.3，2026-09-17）**：真机反馈「点工具结果很多条一起弹出」——① 先试消息类条目预览单行省略（W5.2），当日即按梦新意见回退（预览保持多行原样）；② 最终采用分页压缩：消息类分类 30→10 条（首屏与「加载更多」同步）。**教训：布局密度类改动以真机手感为准，先压条数这类「少即是多」的朴素手段，勿自作主张截断内容。**
 25. **消息条目预览长串换行（W5.4，2026-09-17）**：预览含长无空格串（命令/URL）会横向撑出卡片（真机「文字都出去了」）——预览行统一 `overflowWrap: 'anywhere'`（普通文本正常断词，长串任意位置断）。w5_verify 6d 检查（scrollWidth ≤ clientWidth）。
+26. **文件活动 scope 跟随趋势选择（W6，2026-09-17）**：文件卡副标题 + 数据范围跟随趋势图选中轮/步（对齐上游语义）。实现：桥 `apiFileActivity` 返回 `userIdx`（raw 窗口内 USER 消息的 preparedHistory 下标数组，升序）；前端以「选中项与最新轮的轮差 d」映射过滤边界 `before = u[length-d]`（d=0=不过滤；d≥u.length=选中轮早于窗口→空态提示）；过滤时前端重聚合（`refoldByBefore`，计数/总量口径对齐桥聚合），无过滤沿用桥聚合（回归不变）。**近似说明**：窗口 USER 与快照按尾部对齐，虚拟轮/合并快照最多 1 轮错位（真机验收无感）。副标题文案复用详情卡模板（模板字符串提取生成，100% 同形）。
+27. **文件活动行尾时间（W6）**：raw 无 op 级时间戳——用「op.resultIdx → 所在轮」映射（`opTimeBands` = 窗口 USER 锚点 × 快照时间，尾部对齐；`timeOf` 回扫取 ≤resultIdx 的最近锚点），以 `fmtTime`（HH:MM:SS）渲染；无映射显示「—」。文件行时间取该文件最新 op 的时间。
+28. **文件名打开（W6）**：对齐上游「点文件名可点」的手机近似——宿主 `Tools.Files.open`（UI 模块已用 `Tools.Files.*` 系列，直接调用；与 `extended_file_tools:open_file` 同底层）；桥新增 `openPath` 方法（dispatch：`{m:"openPath", path}`，含结构校验：非空/无控制字符/长度上限）。前端仅 `pattern`/`dir` 之外可点（点状下划线）；失败走页面顶部 flash 条（2.6s 自动消失，无持久化）。真机 `am start` 通道已确认（vivo 办公套件）；mock 交互 16 检查全过。
 
 ---
 
