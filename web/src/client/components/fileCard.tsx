@@ -9,8 +9,8 @@
  * 预览 / 系统打开（文件名不可点）；无时间显示（raw 无时间戳，归 W6 决策）。
  * W3：操作行可点（onLocate）→ 浏览器展开对应工具结果。
  */
-import { memo, useState, type ChangeEvent, type ReactElement, type ReactNode } from 'react'
-import { EMPTY_FA_TOTALS, type FileActivityData, type FileActivityEntry, type FileActivityOp } from '../../data/bridge'
+import { memo, useMemo, useState, type ChangeEvent, type ReactElement, type ReactNode } from 'react'
+import { EMPTY_FA_TOTALS, type FileActivityData, type FileActivityEntry, type FileActivityOp, type FileActivityTotals } from '../../data/bridge'
 import type { ViewKit } from '../viewkit'
 
 export type FileFilter = 'all' | 'read' | 'write' | 'search' | 'image'
@@ -29,6 +29,16 @@ export interface FileCardProps {
   /** W4 排序受控：默认值来自设置卡持久化偏好；卡内切换经 onSortChange 回写。 */
   sort: 'count' | 'latest' | 'path'
   onSortChange: (sort: 'count' | 'latest' | 'path') => void
+  /** W6 scope：数据范围副标题（缺省「截至最新 ·跟随趋势图的选择」）。 */
+  scopeText?: string
+  /** W6 scope：过滤边界（preparedHistory 下标）——只显示 resultIdx < before 的操作；缺省 = 不过滤。 */
+  beforeIdx?: number | null
+  /** W6 scope：选中轮早于数据窗口 → 内容区显示提示。 */
+  scopeOut?: boolean
+  /** W6：点击文件名回调（pattern / 目录不触发；缺省 = 文件名不可点）。 */
+  onOpen?: (path: string) => void
+  /** W6 时间：[[USER 锚点下标, 该轮时间戳]…]（升序）；缺省 = 不显示时间。 */
+  timeBands?: Array<[number, number]> | null
 }
 
 // ── 行图标（移植上游 fileActivity.ts 的 glyphOf：目录桶 / 扩展名桶 / 语言色卡）──
@@ -151,8 +161,48 @@ function glyphOf(path: string, form: FileActivityEntry['form']): FileGlyph {
   return form === 'dir' ? dirGlyph(base) : fileGlyph(base)
 }
 
+/** W6 scope：过滤态按锚点重聚合 ops 的每文件计数（无过滤不走这条，回归不变）。 */
+function refoldByBefore(entries: FileActivityEntry[], before: number): FileActivityEntry[] {
+  const out: FileActivityEntry[] = []
+  for (const e of entries) {
+    const ops = e.ops.filter((o) => o.resultIdx < before)
+    if (ops.length === 0) continue
+    let reads = 0, writes = 0, searches = 0, added = 0, removed = 0, errs = 0
+    for (const o of ops) {
+      if (o.kind === 'read') reads++
+      else if (o.kind === 'write') writes++
+      else searches++
+      added += o.added || 0
+      removed += o.removed || 0
+      if (o.err) errs++
+    }
+    out.push({ ...e, reads, writes, searches, added, removed, errs, ops })
+  }
+  return out
+}
+/** W6 scope：过滤态从 entries 重算 chips 总量（口径对齐桥聚合）。 */
+function totalsOfEntries(entries: FileActivityEntry[]): FileActivityTotals {
+  const totals: FileActivityTotals = { read: { files: 0, ops: 0 }, write: { files: 0, ops: 0 }, search: { files: 0, ops: 0 }, image: { files: 0, ops: 0 }, added: 0, removed: 0 }
+  for (const e of entries) {
+    if (e.reads > 0) { totals.read.files++; totals.read.ops += e.reads }
+    if (e.writes > 0) { totals.write.files++; totals.write.ops += e.writes }
+    if (e.searches > 0) { totals.search.files++; totals.search.ops += e.searches }
+    if (e.form === 'image') { totals.image.files++; totals.image.ops += e.ops.length }
+    totals.added += e.added
+    totals.removed += e.removed
+  }
+  return totals
+}
+/** W6 时间：resultIdx → 所在轮的快照时间（bands 升序，线性回扫；无匹配 = null）。 */
+function timeOf(bands: Array<[number, number]>, idx: number): number | null {
+  for (let i = bands.length - 1; i >= 0; i--) {
+    if (bands[i][0] <= idx) return bands[i][1]
+  }
+  return null
+}
+
 export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode {
-  const { t, fmt } = kit
+  const { t, fmt, fmtTime } = kit
 
   function matches(e: FileActivityEntry, f: FileFilter): boolean {
     if (f === 'all') return true
@@ -174,8 +224,16 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
 
   // memo：App 的其它交互（趋势图 hover / 选中）重渲染时，输入未变则跳过。
   return memo(function FileCard(props: FileCardProps): ReactElement {
-    const entries = props.activity ? props.activity.entries : []
-    const totals = props.activity ? props.activity.totals : EMPTY_FA_TOTALS
+    const filtering = props.beforeIdx !== undefined && props.beforeIdx !== null
+    // W6 scope：过滤态 = ops 按锚点重聚合（计数/总量重算）；无过滤 = 桥聚合原样。
+    const entries = useMemo(() => {
+      const all = props.activity ? props.activity.entries : []
+      return filtering ? refoldByBefore(all, props.beforeIdx as number) : all
+    }, [props.activity, filtering, props.beforeIdx])
+    const totals = useMemo(() => {
+      if (!filtering) return props.activity ? props.activity.totals : EMPTY_FA_TOTALS
+      return totalsOfEntries(entries)
+    }, [filtering, props.activity, entries])
     const [filter, setFilter] = useState<FileFilter>('all')
     // W4：排序受控——默认值由设置卡持久化偏好传入，卡内切换经 onSortChange 回写。
     const sort = props.sort
@@ -196,6 +254,13 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
           // 路径是唯一的 map 键：两向比较是全序。
           : (a.path < b.path ? -1 : 1))
 
+    const canOpen = (en: FileActivityEntry): boolean => props.onOpen !== undefined && en.pattern !== true && en.form !== 'dir'
+    /** W6 时间：op 行时间文本（无映射 = 「—」；未启用时间 = 空串不渲染）。 */
+    const opTimeText = (op: FileActivityOp): string => {
+      if (!props.timeBands) return ''
+      const tt = timeOf(props.timeBands, op.resultIdx)
+      return tt === null ? '—' : fmtTime(tt)
+    }
     const chips: { key: FileFilter; files: number; ops: number }[] = [
       {
         key: 'all',
@@ -228,6 +293,7 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
         {op.hits !== undefined ? <span className="lc-fa-op-detail">{t('files.hits', { n: fmt(op.hits) })}</span> : null}
         {op.added + op.removed > 0 ? <DeltaPair added={op.added} removed={op.removed} /> : null}
         {op.err ? <span className="lc-br-err-dot" title={t('node.failed')} /> : null}
+        {props.timeBands ? <span className="lc-fa-op-time">{opTimeText(op)}</span> : null}
       </>
     )
 
@@ -235,9 +301,11 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
       <div className="lc-card">
         <div className="lc-card-title">
           <span className="lc-card-title-text">{t('files.title')}</span>
-          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>从工具调用解析 · 零新增写入</span>
+          <span className="lc-card-sub">{props.scopeText || t('files.scopeLatest')}</span>
         </div>
-        {entries.length === 0 && props.loading ? (
+        {props.scopeOut ? (
+          <div className="lc-empty">{t('files.scopeOut')}</div>
+        ) : entries.length === 0 && props.loading ? (
           <div className="lc-empty">{t('detail.loading')}</div>
         ) : entries.length === 0 && props.failed ? (
           <div className="lc-empty">
@@ -309,6 +377,7 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
                   const dir = slash >= 0 ? trimmed.slice(0, slash + 1) : ''
                   const base = slash >= 0 ? trimmed.slice(slash + 1) : trimmed
                   const glyph = glyphOf(e.path, e.form)
+                  const eT = props.timeBands && e.ops.length > 0 ? timeOf(props.timeBands, e.ops[0].resultIdx) : null
                   return (
                     <div key={e.path} className={'lc-fa-item' + (open ? ' lc-fa-item-on' : '')}>
                       <button
@@ -331,7 +400,16 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
                             徽章/增减折到第二行。46px 预留 = chevron (12) + 间距 (2×7) + form 图标 (20)。 */}
                         <span className="lc-fa-path flex-1 @max-[380px]/lc-card:basis-[calc(100%-46px)]">
                           {dir !== '' ? <em>{dir}</em> : null}
-                          <b>{base}</b>
+                          {canOpen(e)
+                  ? (
+                    <b className="lc-fa-file"
+                      title={t('files.open')}
+                      onClick={(ev) => { ev.stopPropagation(); props.onOpen!(e.path) }}
+                    >
+                      {base}
+                    </b>
+                  )
+                  : <b>{base}</b>}
                         </span>
                         {e.reads > 0 ? (
                           <span className="lc-fa-badge lc-fa-b-read" title={t('files.kind.read')}><i />{fmt(e.reads)}</span>
@@ -344,6 +422,7 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode 
                         ) : null}
                         {e.added + e.removed > 0 ? <DeltaPair added={e.added} removed={e.removed} /> : null}
                         {e.errs > 0 ? <span className="lc-br-err-dot" title={t('files.errs', { n: e.errs })} /> : null}
+                        {props.timeBands ? <span className="lc-fa-time">{eT ? fmtTime(eT) : '—'}</span> : null}
                       </button>
                       {open ? (
                         <div className="lc-fa-ops">

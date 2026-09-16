@@ -55,3 +55,9 @@
 .lc-br-chev::before { content: ''; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); transition: transform var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease-in-out); }
 .lc-br-chev-on::before { transform: rotate(45deg); }
 .lc-br-err-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-error-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }
+
+/* W6: clickable file name (open with system default app; dotted underline is a weak affordance) */
+.lc-fa-file { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; cursor: pointer; }
+/* W6: trailing time (file row / op row; tabular numbers to avoid jitter) */
+.lc-fa-time { flex: none; color: var(--dsw-alias-label-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.lc-fa-op-time { flex: none; margin-left: auto; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }

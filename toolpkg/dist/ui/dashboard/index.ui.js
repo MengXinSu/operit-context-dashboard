@@ -1114,12 +1114,13 @@ function fa2Aggregate(calls) {
 
 /** v2 主入口：preparedHistory → {entries, totals, stats, legacyItems} */
 function fa2Compute(hist) {
-  var calls = [], results = [];
+  var calls = [], results = [], userIdx = [];
   for (var i = 0; i < hist.length; i++) {
     var it = hist[i] || {};
     var k = String(it.kind || '').toUpperCase();
     var c = String(it.content || '');
-    if (k === 'TOOL_CALL') { var pc = fa2ParseCall(c, i); if (pc) calls.push(pc); }
+    if (k === 'USER') { userIdx.push(i); }
+    else if (k === 'TOOL_CALL') { var pc = fa2ParseCall(c, i); if (pc) calls.push(pc); }
     else if (k === 'TOOL_RESULT') { var pr = fa2ParseResult(c, i); if (pr) results.push(pr); }
   }
   var stats = fa2Pair(calls, results);
@@ -1136,7 +1137,7 @@ function fa2Compute(hist) {
     items.push({ path: en.path, reads: en.reads + en.searches, writes: en.writes, count: en.reads + en.searches + en.writes, tools: order.join(' · ') });
   }
   items.sort(function (a, b) { return b.count - a.count; });
-  return { entries: agg.entries, totals: agg.totals, stats: stats, legacyItems: items.slice(0, 60) };
+  return { entries: agg.entries, totals: agg.totals, stats: stats, userIdx: userIdx, legacyItems: items.slice(0, 60) };
 }
 /**
  * W3 定位联动：锚点下标 → 含锚点的页参数（纯函数，供 apiRawSection 与离线自检共用）。
@@ -1154,13 +1155,30 @@ function fa2FocusPage(revIdxs, focusIdx, lim) {
 // ==== FILE_ACTIVITY_V2 END ====
 
 /** 文件活动：从 raw 的 TOOL_CALL / TOOL_RESULT 解析文件操作记录（v2：op 级 + 配对 + 聚合；零新增写入） */
+/** W6 文件名打开：宿主 Files.open（系统默认应用打开）；只做结构校验，结果由宿主 API 返回。 */
+async function apiOpenPath(pathIn) {
+  var p = typeof pathIn === "string" ? pathIn.trim() : "";
+  if (!p) return { ok: false, error: "empty path" };
+  if (p.length > 512) return { ok: false, error: "path too long" };
+  for (var ci = 0; ci < p.length; ci++) {
+    var cc = p.charCodeAt(ci);
+    if (cc < 32 || cc === 127) return { ok: false, error: "invalid path chars" };
+  }
+  try {
+    var r = await Tools.Files.open(p, "android");
+    var okOpen = !(r && r.successful === false);
+    return { ok: okOpen, path: p, details: (r && r.details) || "", data: r || null };
+  } catch (e) {
+    return { ok: false, path: p, error: String(e && e.message ? e.message : e) };
+  }
+}
 async function apiFileActivity(keyIn) {
   var key = keyIn || await latestKey();
   var payload = await loadRaw(key);
   if (!payload) return { ok: false, error: "raw解析失败" };
   var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory : [];
   var act = fa2Compute(hist);
-  return { ok: true, total: act.entries.length, items: act.legacyItems, entries: act.entries, totals: act.totals, stats: act.stats };
+  return { ok: true, total: act.entries.length, items: act.legacyItems, entries: act.entries, totals: act.totals, stats: act.stats, userIdx: act.userIdx };
 }
 
 
@@ -1353,6 +1371,7 @@ function Screen(ctx) {
           else if (method === "steps") out = await apiSteps(key);
           else if (method === "events") out = await apiEvents(key);
           else if (method === "fileActivity") out = await apiFileActivity(key);
+          else if (method === "openPath") out = await apiOpenPath(req.path);
           else if (method === "toolUsage") out = await apiToolUsage(key);
           else if (method === "messages") out = await apiMessages(key);
           else if (method === "todayMessages") out = await apiTodayMessages();

@@ -8,7 +8,7 @@ import { makeFileCard } from './client/components/fileCard'
 import { partsOf, IMG_COLOR } from './client/categories'
 import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
-  fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage,
+  fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage, fetchOpenPath,
   fetchTodayMessages, fetchSteps, type TodaySessionGroup,
   type MessageItem, type RawSectionData, type RawListItem, type FileActivityData, type FileActivityOp,
 } from './data/bridge'
@@ -215,6 +215,13 @@ function fmtDur(ms: number): string {
   return (ms / 1000).toFixed(0) + 's'
 }
 
+/** W6 scope 副标题：与趋势详情卡一致的轮/步文案。 */
+function scopeLabelOf(r: RequestRecord, granularity: 'step' | 'turn', turnSteps: number): string {
+  return granularity === 'step'
+    ? `第 ${r.turn} 轮 · 第 ${r.step} 步`
+    : (turnSteps > 1 ? `第 ${r.turn} 轮 · 共 ${turnSteps} 步` : `第 ${r.turn} 轮`)
+}
+
 export function App() {
   const [dark, setDark] = useState(() => {
     try { const v = localStorage.getItem('dsh_dark'); return v === null ? true : v === '1' } catch (e) { return true }
@@ -238,6 +245,14 @@ export function App() {
   const pickToolSort = (v: 'size' | 'count' | 'name'): void => { setToolSort(v); savePref('toolSort', v) }
   const [state, setState] = useState<DataState>({ phase: 'loading' })
   const [refreshN, setRefreshN] = useState(0)
+  // W6：瞬态提示（打开失败等；自动消失，无持久化）
+  const [flash, setFlash] = useState('')
+  const flashTimer = useRef<number | null>(null)
+  const showFlash = useCallback((msg: string): void => {
+    setFlash(msg)
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
+    flashTimer.current = window.setTimeout(() => { setFlash('') }, 2600)
+  }, [])
   const [priceCfg, setPriceCfg] = useState<PriceConfig>(loadPriceConfig)
   const [pricesOpen, setPricesOpen] = useState(false)
   const updatePriceCfg = (next: PriceConfig) => {
@@ -419,6 +434,35 @@ export function App() {
     return { r, usage, turnSteps, marker, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
   }, [selected, requests, state.messages, displayRequests, markers])
 
+  // W6 文件卡 scope：跟随趋势图选中（轮级近似过滤；userIdx = 数据窗口的 USER 锚点）。
+  const fileScope = useMemo(() => {
+    const def = { text: t('files.scopeLatest'), before: null as number | null, out: false }
+    const u = (state.fileActivity && state.fileActivity.userIdx) ? state.fileActivity.userIdx : []
+    if (selected === null || selectedInfo === null || u.length === 0) return def
+    const r = selectedInfo.r
+    const last = displayRequests.length ? (displayRequests[displayRequests.length - 1].turn || 0) : 0
+    const cur = r.turn || 0
+    if (!cur || !last) return def
+    const text = scopeLabelOf(r, granularity, selectedInfo.turnSteps)
+    const d = last - cur
+    if (d >= u.length) return { text, before: null, out: true }
+    return { text, before: d > 0 ? u[u.length - d] : null, out: false }
+  }, [state.fileActivity, selected, selectedInfo, displayRequests, granularity])
+
+  // W6 op 时间带：窗口 USER 锚点 → 该轮快照时间（与 requests 尾部对齐；供文件卡行尾时间）。
+  const opTimeBands = useMemo<Array<[number, number]> | null>(() => {
+    const u = (state.fileActivity && state.fileActivity.userIdx) ? state.fileActivity.userIdx : []
+    if (!u.length || !requests.length) return null
+    const take = Math.min(u.length, requests.length)
+    const out: Array<[number, number]> = []
+    for (let i = 0; i < take; i++) {
+      const uu = u[u.length - take + i]
+      const tt = requests[requests.length - take + i]
+      if (tt && typeof tt.time === 'number' && tt.time > 0) out.push([uu, tt.time])
+    }
+    return out.length ? out : null
+  }, [state.fileActivity, requests])
+
   // W5复核新增：事件筛选辅助 + 工具定义排序（设置卡 toolSort 的消费点；其余分类维持宿主顺序）。
   const toggleKind = (k: string): void => { setPickedKinds((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k])) }
   const evCounts = useMemo(() => { const m: Record<string, number> = {}; for (const ev of (state.events || [])) { const k = String(ev.kind || ''); m[k] = (m[k] || 0) + 1 } return m }, [state.events])
@@ -509,7 +553,14 @@ export function App() {
     if (seq !== locateSeq.current) return
     setBrowser((b) => b.cat !== 'tool' ? b : { ...b, loading: false, notice: '未找到对应结果（可能已被压缩裁剪）' })
   }, [])
-
+  // W6 文件名打开：宿主 Files.open（系统默认应用）；失败轻提示。
+  const openFile = useCallback(async (path: string) => {
+    const r = await fetchOpenPath(path)
+    if (!r || !r.ok) {
+      const why = r ? (r.error || r.details || '') : ''
+      showFlash(t('files.openFail', { msg: why || '—' }))
+    }
+  }, [showFlash])
   // pendingFocus 消费：目标条目已在列表 → 展开（如未展开）+ 滚入视野，然后清空。
   useEffect(() => {
     if (!pendingFocus) return
@@ -528,6 +579,7 @@ export function App() {
 
   return (
     <div className="lc-root" style={{ maxWidth: 600, margin: '0 auto', minHeight: '100vh' }}>
+      {flash ? <div className="lc-flash">{flash}</div> : null}
       <div className="lc-card" style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 600 }}>
           {state.phase === 'ready' ? ((state.cardName ? state.cardName + ' · ' : '') + (state.session || '')) :
@@ -838,6 +890,11 @@ export function App() {
         failed={state.phase === 'error'}
         onRetry={() => { try { location.reload() } catch (e) { setRefreshN(refreshN + 1) } }}
         onLocate={locateOp}
+        onOpen={openFile}
+        scopeText={fileScope.text}
+        beforeIdx={fileScope.before}
+        scopeOut={fileScope.out}
+        timeBands={opTimeBands}
         sort={fileSort}
         onSortChange={pickFileSort}
       />

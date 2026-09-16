@@ -181,6 +181,8 @@ export interface FileActivityTotals {
 export interface FileActivityData {
   entries: FileActivityEntry[]
   totals: FileActivityTotals
+  /** W6 scope：数据窗口的 USER 消息锚点（preparedHistory 下标，升序）。 */
+  userIdx?: number[]
 }
 
 export const EMPTY_FA_TOTALS: FileActivityTotals = {
@@ -189,9 +191,14 @@ export const EMPTY_FA_TOTALS: FileActivityTotals = {
 }
 
 export async function fetchFileActivity(): Promise<FileActivityData | null> {
-  const r = await call<{ ok: boolean; entries?: FileActivityEntry[]; totals?: FileActivityTotals }>('fileActivity')
+  const r = await call<{ ok: boolean; entries?: FileActivityEntry[]; totals?: FileActivityTotals; userIdx?: number[] }>('fileActivity')
   if (!r || !r.ok) return null
-  return { entries: r.entries || [], totals: r.totals || EMPTY_FA_TOTALS }
+  return { entries: r.entries || [], totals: r.totals || EMPTY_FA_TOTALS, userIdx: r.userIdx || [] }
+}
+
+/** W6：用系统默认应用打开文件（宿主 Files.open；返回结构含失败原因）。 */
+export async function fetchOpenPath(path: string): Promise<{ ok: boolean; path?: string; details?: string; error?: string } | null> {
+  return call('openPath', { path })
 }
 
 export async function fetchToolUsage(): Promise<any[] | null> {
