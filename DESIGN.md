@@ -391,6 +391,8 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 26. **文件活动 scope 跟随趋势选择（W6，2026-09-17）**：文件卡副标题 + 数据范围跟随趋势图选中轮/步（对齐上游语义）。实现：桥 `apiFileActivity` 返回 `userIdx`（raw 窗口内 USER 消息的 preparedHistory 下标数组，升序）；前端以「选中项与最新轮的轮差 d」映射过滤边界 `before = u[length-d]`（d=0=不过滤；d≥u.length=选中轮早于窗口→空态提示）；过滤时前端重聚合（`refoldByBefore`，计数/总量口径对齐桥聚合），无过滤沿用桥聚合（回归不变）。**近似说明**：窗口 USER 与快照按尾部对齐，虚拟轮/合并快照最多 1 轮错位（真机验收无感）。副标题文案复用详情卡模板（模板字符串提取生成，100% 同形）。
 27. **文件活动行尾时间（W6）**：raw 无 op 级时间戳——用「op.resultIdx → 所在轮」映射（`opTimeBands` = 窗口 USER 锚点 × 快照时间，尾部对齐；`timeOf` 回扫取 ≤resultIdx 的最近锚点），以 `fmtTime`（HH:MM:SS）渲染；无映射显示「—」。文件行时间取该文件最新 op 的时间。
 28. **文件名打开（W6）**：对齐上游「点文件名可点」的手机近似——宿主 `Tools.Files.open`（UI 模块已用 `Tools.Files.*` 系列，直接调用；与 `extended_file_tools:open_file` 同底层）；桥新增 `openPath` 方法（dispatch：`{m:"openPath", path}`，含结构校验：非空/无控制字符/长度上限）。前端仅 `pattern`/`dir` 之外可点（点状下划线）；失败走页面顶部 flash 条（2.6s 自动消失，无持久化）。真机 `am start` 通道已确认（vivo 办公套件）；mock 交互 16 检查全过。
+29. **步 brief 锚点体系（W7①，2026-09-17）**：详情卡「本轮/输入/回复」三行由 `rec.brief = { pIdx, openerIdx, op, ins, res }`（`apiSteps` 附带）驱动。口径：**请求点 P** = USER 或连续 TOOL_RESULT 段末；**产出块** = P+1 起连续 ASSISTANT/TOOL_CALL；**输入段 ins** = (上一步产出块尾, P] 的余条目（实测仅 TOOL_RESULT，闭区间含 P 本身）；**opener** = 该轮第一个请求点前的最近 USER。全库 51 份 raw / 1934 步验证「产出块之后、下一请求点之前零穿插」（`tools/w7_brief_check.cjs` 可复跑）。两个实现坑：① **pendingFocus 消费层曾写死 `cat==='tool'`**（W3 时专为文件卡）——定位泛化到 user/assistant 分类后必须同步放开，否则新分类的 focus 永不消费（真机表现 = 点了没反应）；② **重构定位函数保持用户可见文案零漂移**：miss 提示被顺手从「未找到对应结果」改成「未找到对应条目」，直接打破 w3_verify 断言——测试锁文案即体验契约，要么原文案、要么明确更新测试。
+30. **离线自检的「共用实现」提取约定（W7①）**：桥内 `W7_BRIEF BEGIN/END` 段被 `tools/w7_brief_check.cjs` 按标记切出、在 Node 里 new Function 复跑对拍全库 raw。**约定**：段内函数只允许依赖段内函数 + `fa2Unesc`/`fa2ToolTail`（同被提取），不得引用段外闭包/全局，否则检查会静默漂移。新增算法段照此办理（W3 的 focus_check 同模式）。
 
 ---
 

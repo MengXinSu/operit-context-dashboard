@@ -779,6 +779,17 @@ async function apiSteps(keyIn) {
   }
   // 保险：截断超长（保留最近 1500 步）
   if (out.length > 1500) out = out.slice(out.length - 1500);
+  // W7①：挂步 brief（本轮/输入/回复锚点；失败不影响主流程）
+  try {
+    var pIdxs = w7PointIdxs(hist);
+    if (pIdxs.length > out.length) pIdxs = pIdxs.slice(pIdxs.length - out.length);
+    var briefs = w7BriefOf(hist, pIdxs);
+    for (var bi = 0; bi < out.length; bi++) {
+      var b = briefs[bi];
+      if (!b) continue;
+      out[bi].brief = { pIdx: b.pIdx, openerIdx: b.openerIdx, op: b.op, ins: b.ins, res: b.res };
+    }
+  } catch (eW) { /* brief 失败：趋势步仍可用 */ }
   return { ok: true, items: out };
 }
 
@@ -1153,6 +1164,93 @@ function fa2FocusPage(revIdxs, focusIdx, lim) {
   return { miss: true, idx: fo };
 }
 // ==== FILE_ACTIVITY_V2 END ====
+// ==== W7_BRIEF BEGIN（步 brief：请求点→本轮/输入/回复锚点；纯函数，供 apiSteps 挂接与离线自检共用）====
+/** hist 下标 → kind（大写；越界='(EOF)'） */
+function w7KindAt(hist, x) {
+  return (x >= 0 && x < hist.length) ? String((hist[x] && (hist[x].kind || hist[x].role)) || "").toUpperCase() : "(EOF)";
+}
+/** 预览清洗：去 attachment 整块/未闭合块与其余标签 → 压缩空白 → ≤48 码点 */
+function w7Preview(s) {
+  var t = String(s == null ? "" : s);
+  t = t.replace(/<attachment[\s\S]*?<\/attachment>/g, " ");
+  t = t.replace(/<attachment[\s\S]*$/, " ");
+  t = t.replace(/<[^>]*>/g, " ");
+  t = t.replace(/\s+/g, " ").trim();
+  if (t.length > 200) t = t.slice(0, 200);
+  var a = typeof Array.from === "function" ? Array.from(t) : t.split("");
+  return a.slice(0, 48).join("");
+}
+/** 请求点扫描：与 apiSteps 主扫描同判定（USER / 连续 TOOL_RESULT 段末） */
+function w7PointIdxs(hist) {
+  var ids = [];
+  for (var x = 0; x < hist.length; x++) {
+    var k = w7KindAt(hist, x);
+    if (k === "USER") ids.push(x);
+    else if (k === "TOOL_RESULT" && w7KindAt(hist, x + 1) !== "TOOL_RESULT") ids.push(x);
+  }
+  return ids;
+}
+/** 步 brief 主计算（纯函数）。
+ * hist=preparedHistory；pIdxs=请求点下标（与步记录一一对应）。
+ * 返回 [{pIdx, openerIdx, op, ins, res}]：
+ *   op  = [下标, 预览] | null —— 本轮用户消息（窗口裁剪时常缺）
+ *   ins = [[下标, tag, 预览, err01]] —— 本步新增输入（工具结果；轮首步恒空）
+ *   res = [[下标, tag, 预览, "A"|"T"]] —— 本步产出（A=思考/回复文本段，T=工具调用）
+ * 口径（2026-09-17 全库 51 份 raw / 1934 步验证零穿插）：
+ *   产出块 = P+1 起连续 ASSISTANT/TOOL_CALL；
+ *   ins = (上一步产出块尾, P] 的余条目（实测仅 TOOL_RESULT）；
+ *   opener = 该轮第一个请求点前的最近 USER。 */
+function w7BriefOf(hist, pIdxs) {
+  var out = [];
+  var curOpener = -1;
+  var prevTail = -1;
+  for (var s = 0; s < pIdxs.length; s++) {
+    var P = pIdxs[s];
+    var kP = w7KindAt(hist, P);
+    if (kP === "USER") curOpener = P;
+    var openerIdx = curOpener >= 0 ? curOpener : null;
+    var op = (openerIdx !== null && hist[openerIdx])
+      ? [openerIdx, w7Preview(fa2Unesc(String(hist[openerIdx].content || "").slice(0, 6000)))]
+      : null;
+    // 产出块：P+1 起连续 ASSISTANT/TOOL_CALL
+    var resp = [];
+    var x = P + 1;
+    while (x < hist.length) {
+      var k = w7KindAt(hist, x);
+      if (k !== "ASSISTANT" && k !== "TOOL_CALL") break;
+      var c = String((hist[x] && hist[x].content) || "");
+      if (k === "ASSISTANT") {
+        resp.push([x, /^\s*<think[\s>]/.test(c) ? "思考" : "回复", w7Preview(fa2Unesc(c.slice(0, 6000))), "A"]);
+      } else {
+        var h = c.match(/<tool_[A-Za-z0-9]+\s+name="([^"]+)"/);
+        var tn = h ? h[1] : "";
+        if (tn === "package_proxy") {
+          var p2 = c.match(/<param name="tool_name">([^<]+)<\/param>/);
+          if (p2) tn = p2[1].trim();
+        }
+        resp.push([x, tn ? fa2ToolTail(tn) : "调用", w7Preview(fa2Unesc(c.slice(0, 6000))), "T"]);
+      }
+      x++;
+    }
+    // 输入段：(prevTail, P]；轮首或窗口开头恒空
+    var ins = [];
+    if (s > 0 && kP !== "USER") {
+      var from = (prevTail >= 0 ? prevTail : pIdxs[s - 1]) + 1;
+      for (var y = from; y <= P && y < hist.length; y++) {
+        var cy = String((hist[y] && hist[y].content) || "");
+        var ky = w7KindAt(hist, y);
+        var mh = cy.match(/<tool_result_[A-Za-z0-9]+\s+name="([^"]+)"(?:\s+status="([^"]+)")?/);
+        var tag = mh ? fa2ToolTail(mh[1]) : (ky === "TOOL_RESULT" ? "结果" : ky.toLowerCase());
+        var err = ((mh && mh[2] === "error") || /^<tool_result_[A-Za-z0-9]+[^>]*>\s*<content>\s*<error>/.test(cy)) ? 1 : 0;
+        ins.push([y, tag, w7Preview(fa2Unesc(cy.slice(0, 6000))), err]);
+      }
+    }
+    prevTail = resp.length ? resp[resp.length - 1][0] : P;
+    out.push({ pIdx: P, openerIdx: openerIdx, op: op, ins: ins, res: resp });
+  }
+  return out;
+}
+// ==== W7_BRIEF END ====
 
 /** 文件活动：从 raw 的 TOOL_CALL / TOOL_RESULT 解析文件操作记录（v2：op 级 + 配对 + 聚合；零新增写入） */
 /** W6 文件名打开：宿主 Files.open（系统默认应用打开）；只做结构校验，结果由宿主 API 返回。 */

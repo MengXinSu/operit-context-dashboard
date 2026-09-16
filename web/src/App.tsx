@@ -12,7 +12,7 @@ import {
   fetchTodayMessages, fetchSteps, type TodaySessionGroup,
   type MessageItem, type RawSectionData, type RawListItem, type FileActivityData, type FileActivityOp,
 } from './data/bridge'
-import type { ContextEventRecord, RequestRecord } from './shared/types'
+import type { ContextEventRecord, RequestRecord, StepBriefData } from './shared/types'
 
 // Operit 语境覆盖
 const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结', 'settings.title': '设置', 'settings.desc': '各卡显示的默认偏好 · 改动自动保存' }
@@ -100,6 +100,7 @@ function toRequests(items: any[] | null): RequestRecord[] {
     skill: it.skill, summary: it.summary, assistant: it.assistant, tool: it.tool, total: it.total,
     historyCount: it.historyCount, historyChars: it.historyChars,
     skip: it.skip,
+    brief: it.brief,
     img: it.img, imgCount: it.imgCount,
   }))
 }
@@ -213,6 +214,84 @@ function fmtDur(ms: number): string {
   if (ms >= 3600000) return (ms / 3600000).toFixed(1) + 'h'
   if (ms >= 60000) return (ms / 60000).toFixed(1) + 'm'
   return (ms / 1000).toFixed(0) + 's'
+}
+
+// ── W7① 步 brief：本轮/输入/回复三行（点击直达浏览器对应条目）──
+function BriefChip(props: { label: string | null; text: string; err?: number; onClick?: () => void }) {
+  return (
+    <span
+      className="lc-brief-chip"
+      onClick={props.onClick ? (e) => { e.stopPropagation(); if (props.onClick) props.onClick() } : undefined}
+      title={(props.label ? props.label + ' · ' : '') + props.text + (props.onClick ? ' —— ' + t('brief.locate') : '')}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%', minWidth: 0,
+        padding: '1px 6px', borderRadius: 5,
+        border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))',
+        background: 'var(--dsw-alias-bg-layer-2)',
+        fontSize: 10.5, lineHeight: 1.8,
+        cursor: props.onClick ? 'pointer' : 'default',
+      }}
+    >
+      {props.err === 1 ? <span style={{ width: 5, height: 5, borderRadius: 3, background: 'var(--dsw-alias-state-warn-primary, #f59e0b)', flex: 'none' }} /> : null}
+      {props.label ? <span style={{ opacity: 0.72, flex: 'none' }}>{props.label}</span> : null}
+      {props.text ? <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{props.text}</span> : null}
+    </span>
+  )
+}
+function BriefSection(props: { brief: StepBriefData | null | undefined; onLocate: (goals: Array<{ idx: number; cat: string }>) => void }) {
+  const br = props.brief
+  if (!br) return null
+  const bRowS: import('react').CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 6, minWidth: 0, marginTop: 5 }
+  const bTagS: import('react').CSSProperties = { flex: 'none', width: 26, textAlign: 'right', opacity: 0.55, fontSize: 10.5, lineHeight: '21px' }
+  const bWrapS: import('react').CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 4, minWidth: 0, flex: 1 }
+  const bEmptyS: import('react').CSSProperties = { opacity: 0.45, fontSize: 10.5, lineHeight: '21px' }
+  const bMoreS: import('react').CSSProperties = { opacity: 0.55, fontSize: 10.5, lineHeight: '21px' }
+  const MAX = 3
+  const op = br.op
+  const ins = br.ins || []
+  const res = br.res || []
+  return (
+    <div style={{ marginTop: 7, marginBottom: 1 }}>
+      <div style={bRowS}>
+        <span className="lc-brief-tag" style={bTagS}>{t('brief.turn')}</span>
+        <div style={bWrapS}>
+          {op
+            ? <BriefChip label="用户" text={op[1]} onClick={() => props.onLocate([{ idx: op[0], cat: 'user' }])} />
+            : <span style={bEmptyS}>—</span>}
+        </div>
+      </div>
+      <div style={bRowS}>
+        <span className="lc-brief-tag" style={bTagS}>{t('brief.input')}</span>
+        <div style={bWrapS}>
+          {ins.length === 0
+            ? <span style={bEmptyS}>{t('brief.noInputs')}</span>
+            : (
+              <>
+                {ins.slice(0, MAX).map((e) => (
+                  <BriefChip key={e[0]} label={e[1]} text={e[2]} err={e[3]} onClick={() => props.onLocate([{ idx: e[0], cat: 'tool' }])} />
+                ))}
+                {ins.length > MAX ? <span style={bMoreS}>{t('brief.more', { n: ins.length - MAX })}</span> : null}
+              </>
+            )}
+        </div>
+      </div>
+      <div style={bRowS}>
+        <span className="lc-brief-tag" style={bTagS}>{t('brief.reply')}</span>
+        <div style={bWrapS}>
+          {res.length === 0
+            ? <span style={bEmptyS}>—</span>
+            : (
+              <>
+                {res.slice(0, MAX).map((e) => (
+                  <BriefChip key={e[0]} label={e[1]} text={e[2]} onClick={() => props.onLocate([{ idx: e[0], cat: e[3] === 'A' ? 'assistant' : 'tool' }])} />
+                ))}
+                {res.length > MAX ? <span style={bMoreS}>{t('brief.more', { n: res.length - MAX })}</span> : null}
+              </>
+            )}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /** W6 scope 副标题：与趋势详情卡一致的轮/步文案。 */
@@ -434,6 +513,17 @@ export function App() {
     return { r, usage, turnSteps, marker, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
   }, [selected, requests, state.messages, displayRequests, markers])
 
+  // W7① 选中步/轮的 brief：步模式直接取；轮模式取该轮最后一步（输入行留空，与上游 turn 语义一致）。
+  const briefInfo = useMemo(() => {
+    if (!selectedInfo) return null
+    const r = selectedInfo.r
+    if (granularity === 'step') return r.brief || null
+    const steps = state.steps || []
+    let last: RequestRecord | null = null
+    for (const s of steps) { if (s && s.turn === r.turn) last = s }
+    if (!last || !last.brief) return null
+    return { ...last.brief, ins: [] as StepBriefData['ins'] }
+  }, [selectedInfo, granularity, state.steps])
   // W6 文件卡 scope：跟随趋势图选中（轮级近似过滤；userIdx = 数据窗口的 USER 锚点）。
   const fileScope = useMemo(() => {
     const def = { text: t('files.scopeLatest'), before: null as number | null, out: false }
@@ -525,34 +615,44 @@ export function App() {
     })
   }
 
-  // W3 定位联动：点文件卡操作行 → 打开「工具结果」分类，把对应条目滚入视野并展开。
-  // 快路径：目标已在当前列表 → 零网络直达；否则桥 focus 一页直达（返回含锚点的页）。
-  // 失败分支：result / call 两个锚点都未命中 → notice 提示（可能已被压缩裁剪）。
-  const locateOp = useCallback(async (op: FileActivityOp) => {
+  // W7① 泛化定位：任意锚点列表 → 逐目标尝试、一页直达、滚入视野（文件卡定位与步 brief 共用）。
+  // 快路径：目标已在当前打开的列表 → 零网络直达；否则对每个锚发 focus 请求（返回含锚点的页）。
+  // 失败分支：全部未命中 → notice 提示（可能已被压缩裁剪）。
+  const locateAny = useCallback(async (goals: Array<{ idx: number; cat: string }>) => {
+    if (goals.length === 0) return
     const seq = ++locateSeq.current
     try { browserCardRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }) } catch (e) { /* 忽略：滚动失败不阻断定位 */ }
     const b0 = browserRef.current
-    if (b0.cat === 'tool' && b0.data && b0.data.items) {
-      if (b0.data.items.some(it => it.idx === op.resultIdx)) { setPendingFocus({ idx: op.resultIdx }); return }
-      if (b0.data.items.some(it => it.idx === op.callIdx)) { setPendingFocus({ idx: op.callIdx }); return }
+    if (b0.cat && b0.data && b0.data.items) {
+      for (const g of goals) {
+        if (g.cat === b0.cat && b0.data.items.some(it => it.idx === g.idx)) { setPendingFocus({ idx: g.idx }); return }
+      }
     }
-    setBrowser((b) => b.cat === 'tool'
-      ? { ...b, loading: true, notice: '' }
-      : { cat: 'tool', label: '工具结果', data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
-    const targets = op.resultIdx === op.callIdx ? [op.resultIdx] : [op.resultIdx, op.callIdx]
-    for (const t of targets) {
-      const d = await fetchRawSection('tool', 0, 30, t)
+    for (const g of goals) {
+      const label = (BROWSER_CATS.find((c) => c.key === g.cat) || { label: g.cat }).label
+      setBrowser((b) => b.cat === g.cat
+        ? { ...b, loading: true, notice: '' }
+        : { cat: g.cat, label, data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
+      const d = await fetchRawSection(g.cat, 0, 30, g.idx)
       if (seq !== locateSeq.current) return // 新一次定位已发起：放弃迟到响应
-      const hit = !!(d && d.ok && d.items && d.items.some(it => it.idx === t))
+      const hit = !!(d && d.ok && d.items && d.items.some(it => it.idx === g.idx))
       if (hit) {
-        setBrowser((b) => b.cat !== 'tool' ? b : { ...b, data: d, loading: false, error: '', notice: '' })
-        setPendingFocus({ idx: t })
+        setBrowser((b) => b.cat !== g.cat ? b : { ...b, data: d, loading: false, error: '', notice: '' })
+        setPendingFocus({ idx: g.idx })
         return
       }
     }
     if (seq !== locateSeq.current) return
-    setBrowser((b) => b.cat !== 'tool' ? b : { ...b, loading: false, notice: '未找到对应结果（可能已被压缩裁剪）' })
+    const lastCat = goals[goals.length - 1].cat
+    setBrowser((b) => b.cat !== lastCat ? b : { ...b, loading: false, notice: '未找到对应结果（可能已被压缩裁剪）' })
   }, [])
+  // 文件卡操作行定位：result / call 两个锚点，落到「工具结果」分类。
+  const locateOp = useCallback(async (op: FileActivityOp) => {
+    const goals = op.resultIdx === op.callIdx
+      ? [{ idx: op.resultIdx, cat: 'tool' }]
+      : [{ idx: op.resultIdx, cat: 'tool' }, { idx: op.callIdx, cat: 'tool' }]
+    await locateAny(goals)
+  }, [locateAny])
   // W6 文件名打开：宿主 Files.open（系统默认应用）；失败轻提示。
   const openFile = useCallback(async (path: string) => {
     const r = await fetchOpenPath(path)
@@ -564,7 +664,7 @@ export function App() {
   // pendingFocus 消费：目标条目已在列表 → 展开（如未展开）+ 滚入视野，然后清空。
   useEffect(() => {
     if (!pendingFocus) return
-    const items = browser.cat === 'tool' && browser.data ? browser.data.items : undefined
+    const items = browser.data && browser.data.items ? browser.data.items : undefined
     if (!items || !items.some(it => it.idx === pendingFocus.idx)) return
     const idx = pendingFocus.idx
     if (browser.expanded[idx] === undefined && browser.expanding !== idx) {
@@ -821,6 +921,7 @@ export function App() {
               <button className="lc-gran-btn" style={{ marginLeft: 'auto' }} onClick={() => setSelected(null)}>✕</button>
             </div>
                         <div style={{ marginTop: 8 }}>
+              <BriefSection brief={briefInfo} onLocate={locateAny} />
               <StackedBar parts={selectedInfo.parts} hoverKey={hoverCat} onHoverKey={setHoverCat} />
             </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '4px 10px', marginTop: 6 }}>

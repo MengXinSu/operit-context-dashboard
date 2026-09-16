@@ -506,6 +506,15 @@ export interface SurfaceNode {
 }
 
 /** One answered model call (a step); consecutive records of one turn form it. */
+/** W7① 步 brief 锚点数据：本轮/输入/回复的 preparedHistory 下标与预览（宜主 apiSteps 附带）。 */
+export interface StepBriefData {
+  pIdx: number
+  openerIdx: number | null
+  op: [number, string] | null
+  ins: Array<[number, string, string, number]>
+  res: Array<[number, string, string, 'A' | 'T']>
+}
+
 export interface RequestRecord {
   turn?: number
   step?: number
@@ -522,6 +531,8 @@ export interface RequestRecord {
   summary?: number
   historyCount?: number
   historyChars?: number
+  /** W7① 步 brief（宜主 apiSteps 附带；轮聚合行无此字段）。 */
+  brief?: StepBriefData | null
   /**
    * Skill-machinery tokens of this request (the `skill` composition
    * category — catalog digests, invocation instructions, `skill`-tool
