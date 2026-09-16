@@ -190,14 +190,14 @@ function kindLabel(k?: string): string {
   }
 }
 const rawPreStyle: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.6, maxHeight: '55vh', overflow: 'auto', background: 'var(--dsw-alias-bg-layer-2)', padding: 10, borderRadius: 8, margin: '6px 0 0' }
-function TextPreview({ text }: { text: string }) {
+function TextPreview({ text, limit = 4000 }: { text: string; limit?: number }) {
   const [full, setFull] = useState(false)
-  const LIMIT = 4000
+  const LIMIT = limit
   if (text.length <= LIMIT) return <pre style={rawPreStyle}>{text}</pre>
   return (
     <div>
       <pre style={rawPreStyle}>{full ? text : text.slice(0, LIMIT) + '\n\n…（仅预览前 ' + LIMIT + ' 字，数据未丢失）'}</pre>
-      <button className="lc-gran-btn" style={{ marginTop: 6 }} onClick={() => setFull(!full)}>
+      <button className="lc-gran-btn" style={{ marginTop: 6 }} onClick={(e) => { e.stopPropagation(); setFull(!full) }}>
         {full ? '收起' : '展开全部（' + text.length + ' 字符）'}
       </button>
     </div>
@@ -674,7 +674,7 @@ export function App() {
                           </div>
                           <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5 }}>{it.preview}</div>
                           {browser.expandFailed && browser.expandFailed[it.idx] ? <div style={{ fontSize: 10, marginTop: 3, color: 'var(--dsw-alias-state-error-primary)' }}>读取失败 · 点击重试</div> : null}
-                          {browser.expanded[it.idx] !== undefined ? <pre style={rawPreStyle}>{browser.expanded[it.idx]}</pre> : null}
+                          {browser.expanded[it.idx] !== undefined ? <TextPreview text={browser.expanded[it.idx]} limit={1200} /> : null}
                         </div>
                       ))}
                       {browser.data.items.length < (browser.data.total || 0) ? (

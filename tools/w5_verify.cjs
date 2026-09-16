@@ -50,9 +50,13 @@ function check(name, ok, extra) {
             { idx: 'tool:2', name: 'list_files', preview: '列出目录……', chars: 300 },
           ] });
           if (req.section === 'user') return JSON.stringify({ ok: true, kind: 'list', total: 1, offset: 0, items: [{ idx: 7, kind: 'USER', chars: 12, preview: '你好（mock）' }] });
+          if (req.section === 'tool') return JSON.stringify({ ok: true, kind: 'list', total: 1, offset: 0, items: [{ idx: 100, kind: 'TOOL_RESULT', toolName: 'read_file', chars: 5000, preview: 'XXXXXXXXXXXXXXXXXXXXXXXXXXXX' }] });
           return JSON.stringify({ ok: true, kind: 'list', total: 0, items: [] });
         }
-        if (m === 'rawItem') return JSON.stringify({ ok: false, error: 'mock failure' });
+        if (m === 'rawItem') {
+          if (req.index === 7) return JSON.stringify({ ok: false, error: 'mock failure' });
+          return JSON.stringify({ ok: true, kind: 'TOOL_RESULT', toolName: 'read_file', content: 'X'.repeat(5000) });
+        }
         return JSON.stringify({ ok: true, items: [] });
       },
     };
@@ -164,6 +168,29 @@ function check(name, ok, extra) {
   await page.waitForFunction(() => document.body.innerText.includes('读取失败 · 点击重试'), null, { timeout: 8000 });
   check('5a 读取失败提示（点击重试）', true);
   await page.screenshot({ path: SHOT_DIR + '/w5_4_fail.png' });
+
+  // ── 场景6：长内容渐进展开（1200 预览 +「展开全部」）──
+  await page.evaluate(() => { [...document.querySelectorAll('span')].filter((s) => s.textContent === '工具结果' && s.parentElement.tagName === 'DIV')[0].parentElement.click(); });
+  await page.waitForFunction(() => /X{20}/.test(document.body.innerText), null, { timeout: 5000 });
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll('div')].find((d) => d.children.length === 0 && /X{20}/.test(d.textContent) && d.textContent.length < 200);
+    el.parentElement.click();
+  });
+  await page.waitForFunction(() => { const t = document.body.innerText; return t.includes('展开全部') && t.includes('5000'); }, null, { timeout: 8000 });
+  check('6a 长内容展开→1200预览+「展开全部」按钮', true);
+  const s6 = await page.evaluate(() => {
+    const pre = [...document.querySelectorAll('pre')].find((p) => /X{100}/.test(p.textContent));
+    return pre ? { len: pre.textContent.length, tail: pre.textContent.slice(-40) } : null;
+  });
+  check('6b 预览长度≈1200+提示尾巴', !!s6 && s6.len <= 1400 && /数据未丢失/.test(s6.tail || ''), JSON.stringify(s6));
+  await page.evaluate(() => { [...document.querySelectorAll('button')].find((b) => b.textContent.includes('展开全部')).click(); });
+  await page.waitForFunction(() => document.body.innerText.includes('收起'), null, { timeout: 5000 });
+  const s6c = await page.evaluate(() => {
+    const pre = [...document.querySelectorAll('pre')].find((p) => /X{100}/.test(p.textContent));
+    return pre ? pre.textContent.length : 0;
+  });
+  check('6c 展开全部→全文（≥4900）', s6c >= 4900, String(s6c));
+  await page.screenshot({ path: SHOT_DIR + '/w5_5_expand.png' });
 
   console.log('==== W5 verify: PASS=' + pass + ' FAIL=' + fail + ' ====');
   await browser.close();
