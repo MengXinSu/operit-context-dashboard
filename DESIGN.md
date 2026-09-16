@@ -327,6 +327,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - - 趋势柱点击：详情卡显示该轮占用条（StackedBar 铺满）+ 2 列颜色图例（名称 ≈值 %），与「当前上下文」卡图例跨卡 hover 联动。
 - 上下文事件 chips（W5）：点击切换该 kind 显示（默认全选；全取消→空态）；行内 kind chip + 计数；列表最新在前。
 - 工具定义排序（W5）：浏览器「工具定义」分类内排序工具条（按大小/按次数/按名称），与设置卡同源（localStorage `dsh-prefs-v1`）。
+- 浏览器条目展开（W5.1）：超 1200 字符渐进展开——先 1200 预览 +「展开全部」按钮（已阅全文后按钮变「收起」回预览）。
 - 设置卡（W4）：底部折叠条（版本号条上方，默认收起）；展开四行偏好 chips（趋势粒度/展示方式、文件活动排序、工具定义排序）；改动即时生效 + localStorage 持久化；设置卡与各卡内切换按钮同源（同改同存）。
 - 深浅色：`data-ds-dark-theme` 属性切换 + `dsh_dark` 记忆。
 
@@ -380,6 +381,9 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 20. **设置卡（W4，2026-09-16）**：四项偏好 granularity/mode/fileSort/toolSort。设计决策：① 形态=底部（版本号条上方）折叠条、默认收起——初版置于顶部（头部卡后），2026-09-16 晚按梦新真机意见移至底部（低频设置不打扰首屏，亦贴近上游「设置页底部」语义）；② 选择交互用页面统一 chips（`.lc-gran-btn`）而非上游下拉菜单（无浮层组件问题、与外层控件同语言）；③ **写回语义=卡内切换也持久化**（与上游「卡内 mount-local 不回写」不同）——单机手机场景「上次选择保持」优于「每次回默认」，且设置卡与卡内按钮同源（一个 state）；④ fileSort 对文件卡**受控**（`FileCardProps.sort/onSortChange` 必传，App 持 state），设置改动即时联动；gran/mode 与趋势卡同理；⑤ **toolSort 消费点归 W5**（浏览器工具定义分类排序按钮），W4 只做持久化。验证：`tools/w4_verify.cjs`（Playwright+mock）14 检查全过，覆盖默认值/联动/刷新持久化。顺手修：fileCard `makeFileCard` 返回注解 `ReactElement→ReactNode`（memo 调用签名返回 ReactNode，tsc 的既有报错；vite build 不查类型所以一直未暴露）。**tsc 已知残余**：shared/types.ts 5 条上游类型引用报错（`../host/*`、`@deepseek-ai/*`，构建链不涉及，不修）。
 21. **事件卡筛选与 kind chips（W5，2026-09-16）**：chips 为多选 toggle（点击=切换该 kind 显示；默认全选；全部取消→空态），与文件卡 chips 语言一致；仅 compaction/model 两类（inject/prune/mode 无宿主数据源）；列表最新在前（上游 reverse 口径）。行内 kind chip 配色取上游 `.lc-kind-*`（base.css 新增三行）。
 22. **工具定义排序口径（W5，2026-09-16）**：`toolSort` 消费点在浏览器「工具定义」分类（size=chars 降序 / count=本会话调用次数降序（同次按名称）/ name=字母序）；行尾 `×N`=调用次数（toolUsage 同源）。上游 count 为「所示步 surface」内口径，我方取全会话（差异已记录，单机场景可接受）。
+23. **浏览器条目全文渐进展开（W5.1，2026-09-17）**：真机反馈「工具结果展开太长」——展开 >1200 字符先给 1200 预览 +「展开全部（N字符）」按钮（`TextPreview` limit 参数化，默认 4000 供 system/summary 分类）；按钮 `stopPropagation` 防触发条目 toggle。验证：w5_verify 6a-6c。
+24. **浏览器列表密度迭代（W5.2→W5.3，2026-09-17）**：真机反馈「点工具结果很多条一起弹出」——① 先试消息类条目预览单行省略（W5.2），当日即按梦新意见回退（预览保持多行原样）；② 最终采用分页压缩：消息类分类 30→10 条（首屏与「加载更多」同步）。**教训：布局密度类改动以真机手感为准，先压条数这类「少即是多」的朴素手段，勿自作主张截断内容。**
+25. **消息条目预览长串换行（W5.4，2026-09-17）**：预览含长无空格串（命令/URL）会横向撑出卡片（真机「文字都出去了」）——预览行统一 `overflowWrap: 'anywhere'`（普通文本正常断词，长串任意位置断）。w5_verify 6d 检查（scrollWidth ≤ clientWidth）。
 
 ---
 
