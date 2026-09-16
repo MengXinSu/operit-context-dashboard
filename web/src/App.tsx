@@ -197,11 +197,13 @@ const rawPreStyle: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'b
 /** 预览行清洗：attachment 块（含被截断的不完整块）→「［图片：文件名］」；link 与其余文本原样保留（与展开正文的图卡语义对齐）。 */
 function cleanPreview(s: string): string {
   return s
-    .replace(/<attachment\s+([^>]*)>([\s\S]*?)(?:<\/attachment>|$)/gi, (_m, attrs) => {
-      const fn = /filename\s*=\s*"([^"]*)"/i.exec(attrs);
-      return fn && fn[1] ? `［图片：${fn[1]}］` : '［图片］';
+    .replace(/<attachment\s+([^<>]*?)>([\s\S]*?)(?:<\/attachment>|$)/gi, (_m, attrs) => {
+      const fn = (/filename\s*=\s*"([^"]*)"/i.exec(attrs) || [])[1] || '';
+      const tp = (/type\s*=\s*"([^"]*)"/i.exec(attrs) || [])[1] || '';
+      if (/^image\//i.test(tp)) return fn ? `［图片：${fn}］` : '［图片］';
+      return fn ? `［附件：${fn}］` : '［附件］';
     })
-    .replace(/<attachment\b[^>]*$/i, '［图片］');
+    .replace(/<attachment\s+[^<>]*$/i, '［附件］');
 }
 
 function TextPreview({ text, limit = 4000 }: { text: string; limit?: number }) {
