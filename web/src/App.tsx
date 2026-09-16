@@ -15,7 +15,7 @@ import {
 import type { ContextEventRecord, RequestRecord } from './shared/types'
 
 // Operit 语境覆盖
-const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结' }
+const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结', 'settings.title': '设置', 'settings.desc': '各卡显示的默认偏好 · 改动自动保存' }
 
 // ── 价格配置（峰谷双价，页面内可编辑，localStorage 持久；单位：人民币元/百万 token）──
 // 官方规则（2026-09 核实）：峰时 = 北京时间工作日 09:00-12:00、14:00-18:00（其余含周末为谷时）
@@ -220,6 +220,15 @@ export function App() {
   //轮次/步骤视图切换：轮次=快照聚合（每轮1条）；步骤=宿主从 raw 事后切分重建（每请求1条）。偏好持久化。
   const [granularity, setGranularity] = useState<'step' | 'turn'>(() => (loadPrefs().granularity === 'step' ? 'step' : 'turn'))
   const [mode, setMode] = useState<'total' | 'delta'>(() => (loadPrefs().mode === 'delta' ? 'delta' : 'total'))
+  // W4 设置卡：文件卡 / 工具定义排序偏好（localStorage 持久化；工具定义的消费点在 W5 浏览器细则接入）。
+  const [fileSort, setFileSort] = useState<'count' | 'latest' | 'path'>(() => { const v = loadPrefs().fileSort; return v === 'latest' || v === 'path' ? v : 'count' })
+  const [toolSort, setToolSort] = useState<'size' | 'count' | 'name'>(() => { const v = loadPrefs().toolSort; return v === 'size' || v === 'name' ? v : 'count' })
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  /** 偏好写回：更新 state + localStorage（设置卡与卡内切换共用；工具定义的消费点 W5 接入）。 */
+  const pickGran = (v: 'step' | 'turn'): void => { setGranularity(v); savePref('granularity', v) }
+  const pickMode = (v: 'total' | 'delta'): void => { setMode(v); savePref('mode', v) }
+  const pickFileSort = (v: 'count' | 'latest' | 'path'): void => { setFileSort(v); savePref('fileSort', v) }
+  const pickToolSort = (v: 'size' | 'count' | 'name'): void => { setToolSort(v); savePref('toolSort', v) }
   const [state, setState] = useState<DataState>({ phase: 'loading' })
   const [refreshN, setRefreshN] = useState(0)
   const [priceCfg, setPriceCfg] = useState<PriceConfig>(loadPriceConfig)
@@ -503,6 +512,52 @@ export function App() {
         <button className="lc-gran-btn" onClick={() => setDark(!dark)}>{dark ? '浅色' : '深色'}</button>
       </div>
 
+      <div className="lc-card">
+        <button type="button" className="lc-settings-head" aria-expanded={settingsOpen} onClick={() => { setSettingsOpen(!settingsOpen) }}>
+          <span className="lc-settings-headtext">
+            <span className="lc-settings-name">{t('settings.title')}</span>
+            <span className="lc-settings-desc">{t('settings.desc')}</span>
+          </span>
+          <span className={'lc-br-chev' + (settingsOpen ? ' lc-br-chev-on' : '')} />
+        </button>
+        {settingsOpen ? (
+          <div className="lc-settings-body">
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.gran')}</span>
+              <span className="lc-gran" role="group">
+                {(['step', 'turn'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (granularity === k ? ' lc-gran-on' : '')} onClick={() => pickGran(k)}>{t('gran.' + k)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.mode')}</span>
+              <span className="lc-gran" role="group">
+                {(['total', 'delta'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (mode === k ? ' lc-gran-on' : '')} onClick={() => pickMode(k)}>{t('gran.' + k)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.fileSort')}</span>
+              <span className="lc-gran" role="group">
+                {(['count', 'latest', 'path'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (fileSort === k ? ' lc-gran-on' : '')} onClick={() => pickFileSort(k)}>{t('files.sort.' + k)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="lc-settings-row">
+              <span className="lc-settings-label">{t('settings.toolSort')}</span>
+              <span className="lc-gran" role="group">
+                {(['size', 'count', 'name'] as const).map(k => (
+                  <button key={k} type="button" className={'lc-gran-btn' + (toolSort === k ? ' lc-gran-on' : '')} onClick={() => pickToolSort(k)}>{t('tool.sort.' + k)}</button>
+                ))}
+              </span>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
       <div className="lc-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, textAlign: 'center' }}>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.turnCount}</div><div style={{ fontSize: 10, opacity: 0.65 }}>轮次</div></div>
         <div><div style={{ fontSize: 16, fontWeight: 600 }}>{stats.steps}</div><div style={{ fontSize: 10, opacity: 0.65 }}>步骤</div></div>
@@ -689,10 +744,10 @@ export function App() {
         <div className="lc-card-title">
           <span className="lc-card-title-text">{t('trend.title')}</span>
           <span style={{ display: 'inline-flex', gap: 6, marginLeft: 'auto' }}>
-            <button className="lc-gran-btn" onClick={() => { const n = granularity === 'step' ? 'turn' : 'step'; setGranularity(n); savePref('granularity', n) }}>
+            <button className="lc-gran-btn" onClick={() => pickGran(granularity === 'step' ? 'turn' : 'step')}>
               {granularity === 'step' ? '步骤' : '轮次'}
             </button>
-            <button className="lc-gran-btn" onClick={() => { const n = mode === 'total' ? 'delta' : 'total'; setMode(n); savePref('mode', n) }}>
+            <button className="lc-gran-btn" onClick={() => pickMode(mode === 'total' ? 'delta' : 'total')}>
               {mode === 'total' ? '全量' : '增量'}
             </button>
           </span>
@@ -788,6 +843,8 @@ export function App() {
         failed={state.phase === 'error'}
         onRetry={() => { try { location.reload() } catch (e) { setRefreshN(refreshN + 1) } }}
         onLocate={locateOp}
+        sort={fileSort}
+        onSortChange={pickFileSort}
       />
 
       <div className="lc-card">

@@ -9,7 +9,7 @@
  * 预览 / 系统打开（文件名不可点）；无时间显示（raw 无时间戳，归 W6 决策）。
  * W3：操作行可点（onLocate）→ 浏览器展开对应工具结果。
  */
-import { memo, useState, type ChangeEvent, type ReactElement } from 'react'
+import { memo, useState, type ChangeEvent, type ReactElement, type ReactNode } from 'react'
 import { EMPTY_FA_TOTALS, type FileActivityData, type FileActivityEntry, type FileActivityOp } from '../../data/bridge'
 import type { ViewKit } from '../viewkit'
 
@@ -26,6 +26,9 @@ export interface FileCardProps {
   onRetry?: () => void
   /** W3 定位联动：点操作行 → 浏览器展开对应工具结果；缺省时操作行不可点。 */
   onLocate?: (op: FileActivityOp) => void
+  /** W4 排序受控：默认值来自设置卡持久化偏好；卡内切换经 onSortChange 回写。 */
+  sort: 'count' | 'latest' | 'path'
+  onSortChange: (sort: 'count' | 'latest' | 'path') => void
 }
 
 // ── 行图标（移植上游 fileActivity.ts 的 glyphOf：目录桶 / 扩展名桶 / 语言色卡）──
@@ -148,7 +151,7 @@ function glyphOf(path: string, form: FileActivityEntry['form']): FileGlyph {
   return form === 'dir' ? dirGlyph(base) : fileGlyph(base)
 }
 
-export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactElement {
+export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactNode {
   const { t, fmt } = kit
 
   function matches(e: FileActivityEntry, f: FileFilter): boolean {
@@ -174,8 +177,8 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactEleme
     const entries = props.activity ? props.activity.entries : []
     const totals = props.activity ? props.activity.totals : EMPTY_FA_TOTALS
     const [filter, setFilter] = useState<FileFilter>('all')
-    // 挂载时默认「按次数」（上游设置卡的默认值；W4 设置卡接入后改为读设置）。
-    const [sort, setSort] = useState<'count' | 'latest' | 'path'>('count')
+    // W4：排序受控——默认值由设置卡持久化偏好传入，卡内切换经 onSortChange 回写。
+    const sort = props.sort
     const [query, setQuery] = useState('')
     const [openPath, setOpenPath] = useState<string | null>(null)
 
@@ -286,7 +289,7 @@ export function makeFileCard(kit: ViewKit): (props: FileCardProps) => ReactEleme
                     key={k}
                     type="button"
                     className={'lc-gran-btn' + (sort === k ? ' lc-gran-on' : '')}
-                    onClick={() => { setSort(k) }}
+                    onClick={() => { props.onSortChange(k) }}
                   >
                     {t('files.sort.' + k)}
                   </button>
