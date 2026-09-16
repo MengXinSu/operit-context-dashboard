@@ -439,7 +439,7 @@ export function App() {
       return
     }
     setBrowser({ cat, label, data: null, loading: true, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
-    const d = await fetchRawSection(cat, 0, 30)
+    const d = await fetchRawSection(cat, 0, 10)
     setBrowser((b) => b.cat === cat ? { ...b, data: d, loading: false, error: d && d.ok ? '' : ((d && (d as any).error) || '读取失败') } : b)
   }
 
@@ -448,7 +448,7 @@ export function App() {
     if (!b.cat || !b.data || !b.data.items) return
     if (b.loadingMore) return // 防重入：连点会重复追加同一段
     setBrowser((prev) => ({ ...prev, loadingMore: true }))
-    const more = await fetchRawSection(b.cat, (b.data.offset || 0) + b.data.items.length, 30)
+    const more = await fetchRawSection(b.cat, (b.data.offset || 0) + b.data.items.length, 10)
     setBrowser((prev) => {
       if (prev.cat !== b.cat || !prev.data) return { ...prev, loadingMore: false }
       const items = (more && more.ok && more.items) ? [...(prev.data.items || []), ...more.items] : prev.data.items
@@ -672,7 +672,7 @@ export function App() {
                             <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 10 }}>{c.key === 'tools' ? '×' + (toolCounts.get(String(it.name)) || 0) + ' · ' : ''}{it.chars} 字符</span>
                             {browser.expanding === it.idx ? <span style={{ fontSize: 10, opacity: 0.6 }}>…</span> : null}
                           </div>
-                          <div title={it.preview} style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.preview}</div>
+                          <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5 }}>{it.preview}</div>
                           {browser.expandFailed && browser.expandFailed[it.idx] ? <div style={{ fontSize: 10, marginTop: 3, color: 'var(--dsw-alias-state-error-primary)' }}>读取失败 · 点击重试</div> : null}
                           {browser.expanded[it.idx] !== undefined ? <TextPreview text={browser.expanded[it.idx]} limit={1200} /> : null}
                         </div>
