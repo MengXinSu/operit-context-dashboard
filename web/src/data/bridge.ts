@@ -205,6 +205,21 @@ export async function fetchToolUsage(): Promise<any[] | null> {
   const r = await call<{ ok: boolean; items?: any[] }>('toolUsage')
   return r && r.ok && r.items ? r.items : null
 }
+export interface SessionUsageData {
+  ok: boolean
+  session?: string
+  rows: number
+  input: number
+  output: number
+  cached: number
+  first: number
+  last: number
+}
+/** W7② 会话计费累计（全库 chatmsg，当前会话完成态求和） */
+export async function fetchSessionUsage(): Promise<SessionUsageData | null> {
+  const r = await call<SessionUsageData>('sessionUsage')
+  return r && r.ok ? r : null
+}
 
 export interface TodaySessionGroup {
   session: string

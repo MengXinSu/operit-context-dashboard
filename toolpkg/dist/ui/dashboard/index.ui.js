@@ -1281,6 +1281,34 @@ async function apiFileActivity(keyIn) {
 
 
 /** 工具使用统计：从 raw 的 TOOL_CALL 聚合各工具调用次数（零新增写入） */
+/** W7② 会话计费累计：全库 chatmsg 里当前会话「完成态消息」的求和（in/out/cached）。
+ * 口径=计费（消息级合计含多轮工具往返；与「上下文大小」用途严格区分）；
+ * 跨天安全：读全部 chatmsg-*.jsonl（按天滚动，量级 x百 KB）。 */
+async function apiSessionUsage(keyIn) {
+  var key = keyIn || await latestKey();
+  if (!key) return { ok: false, error: "no key" };
+  var names = await listChatmsgFiles(90);
+  var sum = { rows: 0, input: 0, output: 0, cached: 0, first: 0, last: 0 };
+  for (var i = 0; i < names.length; i++) {
+    var t = await readText(PV_DIR + "/" + names[i]);
+    if (!t) continue;
+    var lines = t.split("\n");
+    for (var j = 0; j < lines.length; j++) {
+      var ln = lines[j];
+      if (!ln || !ln.trim()) continue;
+      var o = null;
+      try { o = JSON.parse(ln); } catch (e2) { continue; }
+      if (!o || o.session !== key || o.done !== true) continue;
+      sum.rows += 1;
+      sum.input += Number(o.inputTokens) || 0;
+      sum.output += Number(o.outputTokens) || 0;
+      sum.cached += Number(o.cachedInputTokens) || 0;
+      var s = Number(o.sentAt) || 0;
+      if (s > 0) { if (!sum.first || s < sum.first) sum.first = s; if (s > sum.last) sum.last = s; }
+    }
+  }
+  return { ok: true, session: key, rows: sum.rows, input: sum.input, output: sum.output, cached: sum.cached, first: sum.first, last: sum.last };
+}
 async function apiToolUsage(keyIn) {
   var key = keyIn || await latestKey();
   var payload = await loadRaw(key);
@@ -1471,6 +1499,7 @@ function Screen(ctx) {
           else if (method === "fileActivity") out = await apiFileActivity(key);
           else if (method === "openPath") out = await apiOpenPath(req.path);
           else if (method === "toolUsage") out = await apiToolUsage(key);
+          else if (method === "sessionUsage") out = await apiSessionUsage(key);
           else if (method === "messages") out = await apiMessages(key);
           else if (method === "todayMessages") out = await apiTodayMessages();
           else if (method === "rawSection") out = await apiRawSection(key, req.section, req.offset, req.limit, req.focusIdx);

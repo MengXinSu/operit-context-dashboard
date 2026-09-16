@@ -9,7 +9,7 @@ import { partsOf, IMG_COLOR } from './client/categories'
 import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage, fetchOpenPath,
-  fetchTodayMessages, fetchSteps, type TodaySessionGroup,
+  fetchTodayMessages, fetchSteps, fetchSessionUsage, type TodaySessionGroup, type SessionUsageData,
   type MessageItem, type RawSectionData, type RawListItem, type FileActivityData, type FileActivityOp,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord, StepBriefData } from './shared/types'
@@ -143,6 +143,7 @@ type DataState = {
   fileActivity?: FileActivityData | null
   toolUsage?: any[]
   todayGroups?: TodaySessionGroup[]
+  sessionUsage?: SessionUsageData | null
   imgAtt?: { count: number; tokens: number }
   error?: string
 }
@@ -349,6 +350,8 @@ export function App() {
   const offpeakNow = isOffpeakAt(priceCfg, new Date())
   const [browser, setBrowser] = useState<BrowserState>({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '' })
   const [hoverTiming, setHoverTiming] = useState<string | null>(null)
+  // W7② 计费卡 hover（与统计卡独立）
+  const [billingHover, setBillingHover] = useState<string | null>(null)
   // W3 定位联动：浏览器卡锚点、条目 ref 表、browser 镜像（供稳定回调读 latest）、定位序号（迟到响应防串台）。
   const browserCardRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef<Record<number, HTMLElement | null>>({})
@@ -372,7 +375,7 @@ export function App() {
       }
       setState({ phase: 'loading' })
       setBrowser({ cat: null, label: '', data: null, loading: false, error: '', expanded: {}, expanding: null, notice: '', expandFailed: {} })
-      const [sum, tl, msgs, evs, fa, tu, tm, st] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages(), fetchSteps()])
+      const [sum, tl, msgs, evs, fa, tu, tm, st, su] = await Promise.all([fetchSummary(), fetchTimeline(), fetchMessages(), fetchEvents(), fetchFileActivity(), fetchToolUsage(), fetchTodayMessages(), fetchSteps(), fetchSessionUsage()])
       if (!alive) return
       if (!sum || !sum.ok || !sum.current) {
         setState({ phase: 'error', error: (sum && sum.error) || '数据读取失败' })
@@ -386,6 +389,7 @@ export function App() {
         historyCount: sum.historyCount, requests, steps, messages: msgs || [],
         events: evs || [], fileActivity: fa || null, toolUsage: tu || [],
         todayGroups: (tm && tm.ok && tm.groups) ? tm.groups : [],
+        sessionUsage: su || null,
         imgAtt: (sum as any).imgAttachments || undefined,
       })
     }
@@ -524,6 +528,19 @@ export function App() {
     if (!last || !last.brief) return null
     return { ...last.brief, ins: [] as StepBriefData['ins'] }
   }, [selectedInfo, granularity, state.steps])
+  // W7② 会话计费：输入按当前构成比例分摊（≈），输出段用真值（同上游 billedParts 口径）。
+  const billing = useMemo(() => {
+    const su = state.sessionUsage
+    if (!su || !su.ok || !(su.rows > 0) || !((su.input + su.output) > 0)) return null
+    const input = su.input
+    const output = su.output
+    const sumParts = parts.reduce((acc, p) => acc + p.value, 0)
+    const segs: Array<{ key: string; color: string; value: number }> = parts.map((p) => ({
+      key: p.key, color: p.color, value: sumParts > 0 ? Math.round(p.value * (input / sumParts)) : 0,
+    }))
+    segs.push({ key: 'output', color: '#f43f5e', value: output })
+    return { total: input + output, rows: su.rows, segs }
+  }, [state.sessionUsage, parts])
   // W6 文件卡 scope：跟随趋势图选中（轮级近似过滤；userIdx = 数据窗口的 USER 锚点）。
   const fileScope = useMemo(() => {
     const def = { text: t('files.scopeLatest'), before: null as number | null, out: false }
@@ -765,7 +782,31 @@ export function App() {
         </div>
       </div>
 
-      <div className="lc-card">
+            <div className="lc-card">
+        <div className="lc-card-title">
+          <span className="lc-card-title-text">{t('tokens.title')}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.55 }}>{billing ? billing.rows + ' 条完成消息 · 计费口径' : '会话计费口径'}</span>
+        </div>
+        {billing ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <Donut segments={billing.segs.filter((s) => s.value > 0)} centerTop={fmtTok(billing.total)} centerSub={t('tokens.total')} hoverKey={billingHover} onHoverKey={setBillingHover} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11.5, minWidth: 150, flex: 1 }}>
+              {billing.segs.filter((s) => s.value > 0).map((s) => (
+                <span key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 5, opacity: billingHover && billingHover !== s.key ? 0.55 : 1 }} onMouseEnter={() => setBillingHover(s.key)} onMouseLeave={() => setBillingHover(null)}>
+                  <span style={{ width: 7, height: 7, borderRadius: 4, background: s.color, flex: 'none' }} />
+                  <span>{s.key === 'output' ? t('tokens.output') : t('cat.' + s.key)}</span>
+                  {s.key === 'output' ? <span style={{ opacity: 0.5, fontSize: 10 }}>{t('tokens.outputNote')}</span> : null}
+                  <b style={{ fontWeight: 600, marginLeft: 'auto' }}>{(s.key === 'output' ? '' : '≈') + fmtTok(s.value)}</b>
+                  <span style={{ opacity: 0.55, width: 32, textAlign: 'right' }}>{billing.total > 0 ? Math.round((s.value / billing.total) * 100) : 0}%</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, opacity: 0.55 }}>会话暂无计费数据（完成一条消息后出现）</div>
+        )}
+      </div>
+<div className="lc-card">
         <div className="lc-card-title">
           <span className="lc-card-title-text">{t('overview.title')}</span>
           <span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.7 }}>≈{fmtTok(totalTok)} / 1.0M · {Math.round(totalTok / 1e6 * 100)}%已用</span>
