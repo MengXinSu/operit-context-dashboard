@@ -531,8 +531,10 @@ export interface RequestRecord {
   summary?: number
   historyCount?: number
   historyChars?: number
-  /** W7① 步 brief（宜主 apiSteps 附带；轮聚合行无此字段）。 */
+  /** W7① 步 brief（W9① 起运行时由 stepBrief 按需填充；轮聚合行无此字段）。 */
   brief?: StepBriefData | null
+  /** W9① 步 brief 按需化：请求点锚点（apiSteps 回传；详情卡据此拉取）。 */
+  pIdx?: number
   /**
    * Skill-machinery tokens of this request (the `skill` composition
    * category — catalog digests, invocation instructions, `skill`-tool

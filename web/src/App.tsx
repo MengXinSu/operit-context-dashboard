@@ -11,7 +11,7 @@ import { partsOf, IMG_COLOR } from './client/categories'
 import {
   fetchSummary, fetchTimeline, fetchMessages, hasBridge,
   fetchRawSection, fetchRawItem, fetchEvents, fetchFileActivity, fetchToolUsage, fetchOpenPath,
-  fetchTodayMessages, fetchSteps, fetchSessionUsage, type TodaySessionGroup, type SessionUsageData,
+  fetchTodayMessages, fetchSteps, fetchSessionUsage, fetchStepBrief, type TodaySessionGroup, type SessionUsageData,
   type MessageItem, type RawSectionData, type RawListItem, type FileActivityData, type FileActivityOp,
 } from './data/bridge'
 import type { ContextEventRecord, RequestRecord, StepBriefData } from './shared/types'
@@ -104,6 +104,7 @@ function toRequests(items: any[] | null): RequestRecord[] {
     skip: it.skip,
     skipWarns: it.skipWarns,
     brief: it.brief,
+    pIdx: it.pIdx,
     img: it.img, imgCount: it.imgCount,
   }))
 }
@@ -637,17 +638,34 @@ export function App() {
     return { r, usage, turnSteps, marker, skipN, skipWarns, parts: (() => { const ps = partsOf(r as any); const iv = (r as any).img || 0; if (iv > 0) ps.push({ key: 'img', color: IMG_COLOR, value: iv }); return ps })() }
   }, [selected, requests, state.messages, displayRequests, markers])
 
-  // W7① 选中步/轮的 brief：步模式直接取；轮模式取该轮最后一步（输入行留空，与上游 turn 语义一致）。
-  const briefInfo = useMemo(() => {
+  // W9①步 brief 按需化：apiSteps 不再附带全量 brief；选中步/轮时单步拉取（毫秒级）+会话内缓存。
+  // 步模式 = r.pIdx；轮模式 = 该轮最后一步的 pIdx（输入行留空，与上游 turn 语义一致）。
+  const briefCacheRef = useRef<Map<number, StepBriefData | null>>(new Map())
+  // 会话/数据刷新时清缓存（pIdx 在压缩 / 会话切换后可能漂移）
+  useEffect(() => { briefCacheRef.current.clear() }, [state.session, state.requests])
+  const [briefData, setBriefData] = useState<StepBriefData | null>(null)
+  const briefTarget = useMemo(() => {
     if (!selectedInfo) return null
-    const r = selectedInfo.r
-    if (granularity === 'step') return r.brief || null
+    if (granularity === 'step') return typeof selectedInfo.r.pIdx === 'number' ? selectedInfo.r.pIdx : null
     const steps = state.steps || []
     let last: RequestRecord | null = null
-    for (const s of steps) { if (s && s.turn === r.turn) last = s }
-    if (!last || !last.brief) return null
-    return { ...last.brief, ins: [] as StepBriefData['ins'] }
+    for (const s of steps) { if (s && s.turn === selectedInfo.r.turn) last = s }
+    return last && typeof last.pIdx === 'number' ? last.pIdx : null
   }, [selectedInfo, granularity, state.steps])
+  useEffect(() => {
+    if (briefTarget === null) { setBriefData(null); return }
+    const cache = briefCacheRef.current
+    if (cache.has(briefTarget)) { setBriefData(cache.get(briefTarget) || null); return }
+    setBriefData(null)
+    if (!hasBridge()) return
+    let alive = true
+    fetchStepBrief(briefTarget).then((b) => {
+      cache.set(briefTarget, b)
+      if (alive) setBriefData(b)
+    })
+    return () => { alive = false }
+  }, [briefTarget])
+  const briefInfo = useMemo(() => (granularity === 'turn' && briefData ? { ...briefData, ins: [] as StepBriefData['ins'] } : briefData), [briefData, granularity])
   // W7② 会话计费：输入按当前构成比例分摊（≈），输出段用真值（同上游 billedParts 口径）。
   const billing = useMemo(() => {
     const su = state.sessionUsage

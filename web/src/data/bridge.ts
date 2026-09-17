@@ -1,5 +1,6 @@
 // bridge 数据通道：优先走宿主（ToolPkg WebView）的 window.CtxProbe.api，
 // 无宿主时返回 null（App 回退到假数据预览模式）。
+import type { StepBriefData } from '../shared/types'
 
 export interface SummaryData {
   ok: boolean
@@ -117,6 +118,13 @@ export interface StepItem extends TimelineItem {
 export async function fetchSteps(): Promise<StepItem[] | null> {
   const r = await call<{ ok: boolean; items?: StepItem[] }>('steps')
   return r && r.ok && r.items ? r.items : null
+}
+
+/** W9①：单步 brief 按需拉取（宿主桥 apiStepBrief；单步现算，毫秒级）。 */
+export async function fetchStepBrief(pIdx: number): Promise<StepBriefData | null> {
+  const r = await call<{ ok: boolean; brief?: StepBriefData; error?: string }>('stepBrief', { pIdx })
+  if (!r || !r.ok || !r.brief) return null
+  return r.brief
 }
 
 export async function fetchMessages(): Promise<MessageItem[] | null> {

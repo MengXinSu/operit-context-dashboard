@@ -399,6 +399,8 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 34. **skipWarns 附挂与展示链（W8）**：桥 `apiTimeline` 尾部把留档警告按 `|warn.atMs − rec.t| < 10s` 最近邻附到对应 rec（`rec.skipWarns=[{wtype,text,at,atMs,idx}]`）；`apiSteps` 按 `t` 精确对齐把该轮**首步（step===1）**并入（step 各行的 t=该轮快照时间，同源可直配）；前端 `toRequests` 透传 → `aggregateByTurn` 轮聚合时合并（`[...last, ...req]`）→ 详情卡 `selectedInfo.skipWarns`（step 模式取 r、turn 模式取**聚合行**——轮模式 detail 的 r 与聚合行不同源，别从 r 取）。展示 = header「N」红标 + 底部「跳过明细」块（`[类型] 原文`）。
 
 
+35. **步 brief 按需化（W9①，2026-09-17 晚）**：大会话（146 步）打开面板真机 `apiSteps` 耗时 18.4–18.8s（`ui_bridge-20260917.jsonl` 实证 `steps=18795/18379ms`；node 对照仅 18–20ms——全耗在设备端 JS 引擎的全量 brief 重算）。改为上游式「derived CLIENT-SIDE」：`apiSteps` 只挂锚点 `rec.pIdx`；新增桥方法 `stepBrief`（dispatch `{m:"stepBrief", pIdx}`）单步现算 `w7BriefOne`；前端选中拉取 + `Map<pIdx, brief|null>` 会话内缓存（含 miss 缓存防重试；`state.session/state.requests` 变化时清空——压缩/切会话后 pIdx 会漂移）；失败/旧桥/无桥 → 详情卡无三行不崩。**口径**：`w7BriefOne` 与旧全量 `w7BriefOf` 第 s 项逐字节一致（`tools/w9_brief_one_check.cjs`：61 raw / 2634 步 0 差异）。**已知微差**：>1500 步保险截尾场景下，截尾首步的 opener 旧版为空、新版可能取到（方向更准，不追平）。验证资产：`tools/w9_brief_check.cjs`（结构自检，替代 w7_brief_check）、`tools/w9_brief_one_check.cjs`（新旧对拍）、`tools/w9_verify.cjs`（20 检查，替代 w7_verify）；旧两脚本已删除（档案 archive/w9_brief_ondemand_20260917/）。
+
 ---
 
 ## 8. 开发与部署流程（Operit 环境）
@@ -421,7 +423,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | 改动 | 部署方式 | 生效方式 |
 |---|---|---|
 | 采集层 / 桥层（main.js、index.ui.js） | `operit_editor:debug_install_toolpkg`（指向 dev_package 目录） | 重进插件 |
-| 页面（index.single.html） | 复制到 `preview/` 目标 | 页面点「刷新」（整页重载） |
+| 页面（index.single.html） | 复制到 `context_dashboard/`（运行时；另同步 repo `assets/` 与 `toolpkg/resources/dashboard/`） | 页面点「刷新」（整页重载） |
 
 ### 8.3 发布到 GitHub
 
@@ -451,7 +453,7 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 - [ ] Vite + React + TS 工程；实现组件（stackedBar/donut/trendChart/legend/fileCard）
 - [ ] 实现卡片页（§5.3 顺序）与交互（§5.6）
 - [ ] localStorage：价格配置 + 偏好持久化（granularity / mode / fileSort / toolSort —— W4 设置卡）
-- [ ] 构建单文件并部署到 preview/，真机验收
+- [ ] 构建单文件并部署到 context_dashboard/（+assets/toolpkg 多处同步），真机验收
 
 **Stage 5 · 打磨与发布**
 - [ ] 回归检查：工具点击/收起、世界书显示、费用单位（¥）、峰谷徽章、图片附件行、趋势图片段、1M 窗口条、耗时环、文件卡操作行定位联动（W3）

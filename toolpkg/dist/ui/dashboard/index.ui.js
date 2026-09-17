@@ -817,18 +817,33 @@ async function apiSteps(keyIn) {
   }
   // 保险：截断超长（保留最近 1500 步）
   if (out.length > 1500) out = out.slice(out.length - 1500);
-  // W7①：挂步 brief（本轮/输入/回复锚点；失败不影响主流程）
+  // W9①：步 brief 按需化——steps 只挂锚点 pIdx（毫秒级）；三行由 apiStepBrief 单步现算。
+  // 口径不变：pIdxs 尾部对齐 out；逐项一致性与旧全量 w7BriefOf 对拍（tools/w9_brief_one_check.cjs）。
   try {
     var pIdxs = w7PointIdxs(hist);
     if (pIdxs.length > out.length) pIdxs = pIdxs.slice(pIdxs.length - out.length);
-    var briefs = w7BriefOf(hist, pIdxs);
-    for (var bi = 0; bi < out.length; bi++) {
-      var b = briefs[bi];
-      if (!b) continue;
-      out[bi].brief = { pIdx: b.pIdx, openerIdx: b.openerIdx, op: b.op, ins: b.ins, res: b.res };
-    }
-  } catch (eW) { /* brief 失败：趋势步仍可用 */ }
+    for (var bi = 0; bi < out.length && bi < pIdxs.length; bi++) out[bi].pIdx = pIdxs[bi];
+  } catch (eW) { /* 锚点失败：详情卡无三行（降级） */ }
   return { ok: true, items: out };
+}
+
+/** W9①：单步 brief —— 点某一步时现算那一条（毫秒级；大会话打开秒回）。
+ * key=会话；pIdx=apiSteps 回传的请求点下标。口径与旧全量版逐项一致。 */
+async function apiStepBrief(keyIn, pIdxIn) {
+  var key = keyIn || await latestKey();
+  if (!key) return { ok: false, error: "no key" };
+  var pIdx = Number(pIdxIn);
+  if (!isFinite(pIdx) || pIdx < 0 || Math.floor(pIdx) !== pIdx) return { ok: false, error: "bad pIdx" };
+  var payload = await loadRaw(key);
+  if (!payload) return { ok: false, error: "raw 解析失败: " + key };
+  var hist = Array.isArray(payload.preparedHistory) ? payload.preparedHistory : [];
+  var pIdxs = w7PointIdxs(hist);
+  var s = -1;
+  for (var i = 0; i < pIdxs.length; i++) { if (pIdxs[i] === pIdx) { s = i; break; } }
+  if (s < 0) return { ok: false, error: "step not found" };
+  var b = w7BriefOne(hist, pIdxs, s);
+  if (!b) return { ok: false, error: "step not found" };
+  return { ok: true, key: key, brief: b };
 }
 
 // ==== W8_WARN_UI BEGIN（2026-09-17；纯函数段：node 自检脚本按标记提取，勿在段内用宿主 API）====
@@ -1264,7 +1279,7 @@ function fa2FocusPage(revIdxs, focusIdx, lim) {
   return { miss: true, idx: fo };
 }
 // ==== FILE_ACTIVITY_V2 END ====
-// ==== W7_BRIEF BEGIN（步 brief：请求点→本轮/输入/回复锚点；纯函数，供 apiSteps 挂接与离线自检共用）====
+// ==== W7_BRIEF BEGIN（步 brief：请求点→本轮/输入/回复锚点；W9① 起由 apiStepBrief 单步现算，纯函数、供对拍脚本共用）====
 /** hist 下标 → kind（大写；越界='(EOF)'） */
 function w7KindAt(hist, x) {
   return (x >= 0 && x < hist.length) ? String((hist[x] && (hist[x].kind || hist[x].role)) || "").toUpperCase() : "(EOF)";
@@ -1290,65 +1305,70 @@ function w7PointIdxs(hist) {
   }
   return ids;
 }
-/** 步 brief 主计算（纯函数）。
- * hist=preparedHistory；pIdxs=请求点下标（与步记录一一对应）。
- * 返回 [{pIdx, openerIdx, op, ins, res}]：
- *   op  = [下标, 预览] | null —— 本轮用户消息（窗口裁剪时常缺）
- *   ins = [[下标, tag, 预览, err01]] —— 本步新增输入（工具结果；轮首步恒空）
- *   res = [[下标, tag, 预览, "A"|"T"]] —— 本步产出（A=思考/回复文本段，T=工具调用）
- * 口径（2026-09-17 全库 51 份 raw / 1934 步验证零穿插）：
- *   产出块 = P+1 起连续 ASSISTANT/TOOL_CALL；
- *   ins = (上一步产出块尾, P] 的余条目（实测仅 TOOL_RESULT）；
- *   opener = 该轮第一个请求点前的最近 USER。 */
-function w7BriefOf(hist, pIdxs) {
-  var out = [];
-  var curOpener = -1;
-  var prevTail = -1;
-  for (var s = 0; s < pIdxs.length; s++) {
-    var P = pIdxs[s];
-    var kP = w7KindAt(hist, P);
-    if (kP === "USER") curOpener = P;
-    var openerIdx = curOpener >= 0 ? curOpener : null;
-    var op = (openerIdx !== null && hist[openerIdx])
-      ? [openerIdx, w7Preview(fa2Unesc(String(hist[openerIdx].content || "").slice(0, 6000)))]
-      : null;
-    // 产出块：P+1 起连续 ASSISTANT/TOOL_CALL
-    var resp = [];
-    var x = P + 1;
-    while (x < hist.length) {
-      var k = w7KindAt(hist, x);
-      if (k !== "ASSISTANT" && k !== "TOOL_CALL") break;
-      var c = String((hist[x] && hist[x].content) || "");
-      if (k === "ASSISTANT") {
-        resp.push([x, /^\s*<think[\s>]/.test(c) ? "思考" : "回复", w7Preview(fa2Unesc(c.slice(0, 6000))), "A"]);
-      } else {
-        var h = c.match(/<tool_[A-Za-z0-9]+\s+name="([^"]+)"/);
-        var tn = h ? h[1] : "";
-        if (tn === "package_proxy") {
-          var p2 = c.match(/<param name="tool_name">([^<]+)<\/param>/);
-          if (p2) tn = p2[1].trim();
-        }
-        resp.push([x, tn ? fa2ToolTail(tn) : "调用", w7Preview(fa2Unesc(c.slice(0, 6000))), "T"]);
-      }
-      x++;
-    }
-    // 输入段：(prevTail, P]；轮首或窗口开头恒空
-    var ins = [];
-    if (s > 0 && kP !== "USER") {
-      var from = (prevTail >= 0 ? prevTail : pIdxs[s - 1]) + 1;
-      for (var y = from; y <= P && y < hist.length; y++) {
-        var cy = String((hist[y] && hist[y].content) || "");
-        var ky = w7KindAt(hist, y);
-        var mh = cy.match(/<tool_result_[A-Za-z0-9]+\s+name="([^"]+)"(?:\s+status="([^"]+)")?/);
-        var tag = mh ? fa2ToolTail(mh[1]) : (ky === "TOOL_RESULT" ? "结果" : ky.toLowerCase());
-        var err = ((mh && mh[2] === "error") || /^<tool_result_[A-Za-z0-9]+[^>]*>\s*<content>\s*<error>/.test(cy)) ? 1 : 0;
-        ins.push([y, tag, w7Preview(fa2Unesc(cy.slice(0, 6000))), err]);
-      }
-    }
-    prevTail = resp.length ? resp[resp.length - 1][0] : P;
-    out.push({ pIdx: P, openerIdx: openerIdx, op: op, ins: ins, res: resp });
+/** W9①：步 brief 单步现算（apiStepBrief 按需调用；与旧全量 w7BriefOf 第 s 项逐字节一致）。
+ * hist=preparedHistory；pIdxs=请求点下标；s=步序号（0 起）。返回 {pIdx, openerIdx, op, ins, res}。
+ * 口径（与旧版同源；2026-09-17 全库 51 raw / 1934 步对拍零差异）：
+ *   opener = pIdxs 中 ≤s 的最近 USER；
+ *   prevTail = 上一步产出块尾（P_prev+1 起连续 ASSISTANT/TOOL_CALL 的末位；空块 = P_prev）；
+ *   ins = (prevTail, P] 的余条目（轮首 / 首步恒空）；res = P+1 起连续 ASSISTANT/TOOL_CALL。 */
+function w7BriefOne(hist, pIdxs, s) {
+  if (!(s >= 0) || s >= pIdxs.length) return null;
+  var P = pIdxs[s];
+  var kP = w7KindAt(hist, P);
+  // opener：pIdxs 中 ≤s 的最近 USER（同一 pIdxs 上下文内自洽，截尾场景与旧版一致）
+  var openerIdx = null;
+  for (var q = s; q >= 0; q--) {
+    if (w7KindAt(hist, pIdxs[q]) === "USER") { openerIdx = pIdxs[q]; break; }
   }
-  return out;
+  var op = null;
+  if (openerIdx !== null && hist[openerIdx]) {
+    op = [openerIdx, w7Preview(fa2Unesc(String(hist[openerIdx].content || "").slice(0, 6000)))];
+  }
+  // 产出块：P+1 起连续 ASSISTANT/TOOL_CALL
+  var resp = [];
+  var x = P + 1;
+  while (x < hist.length) {
+    var k = w7KindAt(hist, x);
+    if (k !== "ASSISTANT" && k !== "TOOL_CALL") break;
+    var c = String((hist[x] && hist[x].content) || "");
+    if (k === "ASSISTANT") {
+      resp.push([x, /^\s*<think[\s>]/.test(c) ? "思考" : "回复", w7Preview(fa2Unesc(c.slice(0, 6000))), "A"]);
+    } else {
+      var h = c.match(/<tool_[A-Za-z0-9]+\s+name="([^"]+)"/);
+      var tn = h ? h[1] : "";
+      if (tn === "package_proxy") {
+        var p2 = c.match(/<param name="tool_name">([^<]+)<\/param>/);
+        if (p2) tn = p2[1].trim();
+      }
+      resp.push([x, tn ? fa2ToolTail(tn) : "调用", w7Preview(fa2Unesc(c.slice(0, 6000))), "T"]);
+    }
+    x++;
+  }
+  // 上一步产出块尾（仅 s>0 用；与旧版 prevTail 更新口径一致）
+  var prevTail = -1;
+  if (s > 0) {
+    var Pprev = pIdxs[s - 1];
+    var yEnd = Pprev + 1;
+    while (yEnd < hist.length) {
+      var k2 = w7KindAt(hist, yEnd);
+      if (k2 !== "ASSISTANT" && k2 !== "TOOL_CALL") break;
+      yEnd++;
+    }
+    prevTail = (yEnd > Pprev + 1) ? (yEnd - 1) : Pprev;
+  }
+  // 输入段：(prevTail, P]；轮首或首步恒空
+  var ins = [];
+  if (s > 0 && kP !== "USER") {
+    for (var y = prevTail + 1; y <= P && y < hist.length; y++) {
+      var cy = String((hist[y] && hist[y].content) || "");
+      var ky = w7KindAt(hist, y);
+      var mh = cy.match(/<tool_result_[A-Za-z0-9]+\s+name="([^"]+)"(?:\s+status="([^"]+)")?/);
+      var tag = mh ? fa2ToolTail(mh[1]) : (ky === "TOOL_RESULT" ? "结果" : ky.toLowerCase());
+      var err = ((mh && mh[2] === "error") || /^<tool_result_[A-Za-z0-9]+[^>]*>\s*<content>\s*<error>/.test(cy)) ? 1 : 0;
+      ins.push([y, tag, w7Preview(fa2Unesc(cy.slice(0, 6000))), err]);
+    }
+  }
+  return { pIdx: P, openerIdx: openerIdx, op: op, ins: ins, res: resp };
 }
 // ==== W7_BRIEF END ====
 
@@ -1595,6 +1615,7 @@ function Screen(ctx) {
           if (method === "summary") out = await apiSummary(key);
           else if (method === "timeline") out = await apiTimeline(key);
           else if (method === "steps") out = await apiSteps(key);
+          else if (method === "stepBrief") out = await apiStepBrief(key, req.pIdx);
           else if (method === "events") out = await apiEvents(key);
           else if (method === "fileActivity") out = await apiFileActivity(key);
           else if (method === "openPath") out = await apiOpenPath(req.path);
