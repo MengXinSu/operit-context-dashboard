@@ -427,8 +427,10 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 
 ### 8.3 发布到 GitHub
 
-- 仓库副本在 `projects/dsh-context-port/github-repo/`（git 或 GitHub API 上传皆可）；
-- 同步文件：`assets/index.single.html`、`web/src/**`、`toolpkg/dist/**`；
+- 工作区：`/tmp/operit-repo-sync`（token 内嵌 remote；sdcard 直接 git 有 FUSE 坑，勿用）；
+- **推前探活**：`timeout 8 curl -s -o /dev/null -w '%{http_code}' https://github.com` → 200/3xx 才推；不通/超时 → 请梦新切换 VPN 开关状态后重探；
+- 推送：`git push origin main`；半路被切（gnutls recv error / TLS non-properly terminated）→ 切 VPN 重试；
+- 教训（别盲试）：VPN 开/关都可能翻车——2026-09-17 晚实测：直连×2 失败 → 开 VPN 成功；2026-09-15 曾相反（关 VPN 才恢复）。
 
 ---
 
