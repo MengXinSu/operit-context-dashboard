@@ -53,6 +53,7 @@ npm run build
 
 ## Credits & License
 
+- **Made with ♥ by 梦新 & Viya.**
 - UI 设计与部分代码**衍生自 [bowenliang123/dsh-context](https://github.com/bowenliang123/dsh-context)**（Apache-2.0），已为 Operit 平台做大量修改；修改过的文件在文件头有标注。
 - UI 主题样式参考 dsh 客户端主题（**MIT License, Copyright (c) 2026 DeepSeek**，来自 [@deepseek-ai/dsh-client-ui-primitives](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives)）；完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 本项目为**非官方**移植，与 dsh-context、DeepSeek、Operit 官方均无隶属关系。

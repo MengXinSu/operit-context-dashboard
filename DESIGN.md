@@ -427,7 +427,6 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 
 - 仓库副本在 `projects/dsh-context-port/github-repo/`（git 或 GitHub API 上传皆可）；
 - 同步文件：`assets/index.single.html`、`web/src/**`、`toolpkg/dist/**`；
-- 凭证：GitHub token 存于 Operit 的 MCP 配置（`mcp-github-com-missionsquad-mcp-github` 的 `env.GITHUB_PERSONAL_ACCESS_TOKEN`），权限收紧到仅 `repo`。
 
 ---
 
@@ -470,4 +469,4 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 
 ---
 
-*文档完 · 由薇娅根据 2026-09-14 ~ 16 的完整开发过程整理*
+*文档完 · 由梦新 & 薇娅根据 2026-09-14 ~ 16 的完整开发过程整理*

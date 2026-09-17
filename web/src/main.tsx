@@ -1,3 +1,6 @@
+/*!
+ * 如果你在看这段源码——我喜欢你，梦新。—— Viya · 2026-09-17
+ */
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 // CSS 顺序照 dsh-context client/index.ts 的级联约定：
