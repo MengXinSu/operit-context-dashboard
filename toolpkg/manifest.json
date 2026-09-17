@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "toolpkg_id": "com.operit.prompt_viewer_ui",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "main": "dist/main.js",
   "display_name": {
     "zh": "上下文仪表盘",
@@ -13,7 +13,18 @@
   },
   "enabled_by_default": true,
   "subpackages": [],
-  "resources": [],
+  "resources": [
+    {
+      "key": "dashboard_boot",
+      "path": "resources/dashboard/boot.html",
+      "mime": "text/html"
+    },
+    {
+      "key": "dashboard_app",
+      "path": "resources/dashboard/index.single.html",
+      "mime": "text/html"
+    }
+  ],
   "workflow_templates": [],
   "workspace_templates": []
 }

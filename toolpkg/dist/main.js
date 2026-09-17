@@ -303,6 +303,8 @@ function chunkLongLines(text, maxLen) {
 // ---------- prompt_finalize 钩子（只存原始数据，不渲染） ----------
 
 function onPromptFinalize(input) {
+  // 机会式后台同步页面资源（不阻塞本轮；轻检查，正常零写）
+  try { exportWebAssets("prompt_finalize_bg"); } catch (eBg) { log("bg export kick failed: " + errText(eBg)); }
   var capturedAt = nowText();
   try {
     var payload = input && input.eventPayload && typeof input.eventPayload === "object"
@@ -695,6 +697,61 @@ function onChatMessage(input) {
   return undefined;
 }
 
+// ---------- 随包页面资源导出（dashboard HTML → 稳定目录） ----------
+
+var EXPORT_WEB_DIR = "/sdcard/Download/Operit/context_dashboard";
+var RES_KEY_BOOT = "dashboard_boot";
+var RES_KEY_APP = "dashboard_app";
+var WEB_EXPORT_VER = "2.8.0";
+
+function _readStr(r) {
+  if (r === null || r === undefined) return "";
+  if (typeof r === "string") return r;
+  if (typeof r === "object") {
+    if (typeof r.content === "string") return r.content;
+    if (typeof r.text === "string") return r.text;
+    if (typeof r.data === "string") return r.data;
+  }
+  return String(r);
+}
+
+// 检测式导出（幂等）：版本标记匹配且文件在位 → 跳过；否则导出。可安全重复调用。
+async function exportWebAssets(tag) {
+  try {
+    try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " hit tag=" + tag + "\n", true, "android"); } catch (eL) {}
+    var need = true;
+    try {
+      var v = _readStr(await Tools.Files.read(EXPORT_WEB_DIR + "/.export-ver", "android")).trim();
+      if (v === WEB_EXPORT_VER) {
+        try { _readStr(await Tools.Files.read(EXPORT_WEB_DIR + "/boot.html", "android")); need = false; } catch (e1) { need = true; }
+      }
+    } catch (e0) { need = true; }
+    if (!need) { try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " skip tag=" + tag + "\n", true, "android"); } catch (eL2) {} return false; }
+    try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " checked need=true tag=" + tag + "\n", true, "android"); } catch (eLx) {}
+    var bootSrc = await ToolPkg.readResource(RES_KEY_BOOT, "boot.html");
+    var appSrc = await ToolPkg.readResource(RES_KEY_APP, "index.single.html");
+    try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " res ok boot=" + String(bootSrc).slice(0, 60) + " app=" + String(appSrc).slice(0, 60) + "\n", true, "android"); } catch (eLx) {}
+    await Tools.Files.mkdir(EXPORT_WEB_DIR, true, "android");
+    await Tools.Files.copy(bootSrc, EXPORT_WEB_DIR + "/boot.html", false, "android", "android");
+    await Tools.Files.copy(appSrc, EXPORT_WEB_DIR + "/index.single.html", false, "android", "android");
+    try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " copied both tag=" + tag + "\n", true, "android"); } catch (eLx) {}
+    await Tools.Files.write(EXPORT_WEB_DIR + "/.export-ver", WEB_EXPORT_VER, false, "android");
+    try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " EXPORTED tag=" + tag + "\n", true, "android"); } catch (eL3) {}
+    log("web assets exported (" + tag + ")");
+    return true;
+  } catch (e) {
+    try { await Tools.Files.write("/sdcard/Download/Operit/prompt_viewer/web_export_hook.log", new Date().toISOString() + " FAILED tag=" + tag + " err=" + errText(e) + "\n", true, "android"); } catch (eLx) {}
+    log("web assets export failed (" + tag + "): " + errText(e));
+    return false;
+  }
+}
+
+/** App 启动钩子：把页面资源同步到稳定目录（用户打开面板时文件必已就位） */
+async function onAppCreateExports(event) {
+  try { await exportWebAssets("app_create"); } catch (e) { log("app export failed: " + errText(e)); }
+  return undefined;
+}
+
 // ---------- 注册 ----------
 
 function registerToolPkg() {
@@ -735,6 +792,27 @@ function registerToolPkg() {
     id: "prompt_snapshot_full",
     function: onPromptFinalize
   });
+
+  // 随包页面资源在 App 启动时同步到稳定目录
+  try {
+    ToolPkg.registerAppLifecycleHook({
+      id: "ctxdash_web_export",
+      event: "application_on_create",
+      function: onAppCreateExports
+    });
+  } catch (e4) {
+    log("lifecycle hook register failed: " + errText(e4));
+  }
+  // resume 时也检查/同步一次（覆盖“装完不重启，切出再切回”的场景；幂等，正常零写）
+  try {
+    ToolPkg.registerAppLifecycleHook({
+      id: "ctxdash_web_export_resume",
+      event: "activity_on_resume",
+      function: onAppCreateExports
+    });
+  } catch (e6) {
+    log("resume hook register failed: " + errText(e6));
+  }
 
   // v2:消息事件钩子（token/timing 数据源）
   try {

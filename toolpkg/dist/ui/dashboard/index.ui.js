@@ -23,8 +23,24 @@ function bridgeLogPath() {
 }
 // 页面地址：模块级常量。禁止放进 Screen 函数体——时间戳每次重组都会变，
 // WebView 检测到 url 变化就重载 → 无限重载循环（实测表现为页面持续闪烁）。
-var DASHBOARD_URL = "file:///sdcard/Download/Operit/projects/dsh-context-port/preview/boot.html?t=" + Date.now();
-var DASHBOARD_APP = "file:///sdcard/Download/Operit/projects/dsh-context-port/preview/index.single.html";
+// 页面文件的稳定落地目录：随包资源导出到这里，WebView 只从这里加载。
+var WEB_DIR = "/sdcard/Download/Operit/context_dashboard";
+var RES_KEY_BOOT = "dashboard_boot";
+var RES_KEY_APP = "dashboard_app";
+var WEB_EXPORT_VER = "2.8.0";
+function _readStr(r) {
+  if (r === null || r === undefined) return "";
+  if (typeof r === "string") return r;
+  if (typeof r === "object") {
+    if (typeof r.content === "string") return r.content;
+    if (typeof r.text === "string") return r.text;
+    if (typeof r.data === "string") return r.data;
+  }
+  return String(r);
+}
+// （页面资源导出已移至 main 上下文：UI 运行时无法读包内资源，实测报错 runtime target is empty）
+var DASHBOARD_URL = "file://" + WEB_DIR + "/boot.html?t=" + Date.now();
+var DASHBOARD_APP = "file://" + WEB_DIR + "/index.single.html";
 // （原 bootedOnce 已移除：页面加载改由 WebView url prop 承担，每次进入强制刷新）
 
 function nowIso() {
@@ -1607,6 +1623,14 @@ function Screen(ctx) {
     } catch (e) {
       hostLog({ dir: "host", at: nowIso(), event: "bridge inject failed", err: String(e) });
     }
+    // 兜底检查：页面资源是否就位（导出由 main 上下文负责，UI 无法读包内资源）
+    try {
+      Tools.Files.read(WEB_DIR + "/boot.html", "android").then(function () {
+        hostLog({ dir: "host", at: nowIso(), event: "assets check ok" });
+      }).catch(function (eC) {
+        hostLog({ dir: "host", at: nowIso(), event: "assets missing (needs app restart to export)", err: String(eC) });
+      });
+    } catch (e2) { hostLog({ dir: "host", at: nowIso(), event: "assets check call failed", err: String(e2) }); }
     // 页面加载交给 WebView 的 url prop（DASHBOARD_URL 为模块级常量，稳定值不会引发重载循环）
   }
 
