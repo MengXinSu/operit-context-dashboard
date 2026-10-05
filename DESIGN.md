@@ -74,7 +74,7 @@ operit-context-dashboard/
 | `chatmsg-YYYYMMDD.jsonl` | chat_message 钩子 | 每条**完成态**消息一行（usage/timing） | 按天 14 天 |
 | `ui_bridge-YYYYMMDD.jsonl` | UI 桥层 | 桥调用日志（调试用） | 按天 14 天 |
 
-`<key>` = chatId 前 8 位（例：`0449d90e`）；同会话的文件互相覆盖/追加，互不干扰。
+`<key>` = chatId 前 8 位（例：`a1b2c3d4`）；同会话的文件互相覆盖/追加，互不干扰。
 
 ### 2.2 核心数据结构（字段级）
 
@@ -102,7 +102,7 @@ operit-context-dashboard/
 
 ```jsonc
 {
-  "session": "0449d90e",
+  "session": "a1b2c3d4",
   "atMs": 1789448058277,           // 捕获时间戳
   "stage": "before_send_to_model",
   "charsByKind": { "SYSTEM":13436, "USER":5542, "ASSISTANT":343257, "TOOL_CALL":…, "TOOL_RESULT":480348, "SUMMARY":… },
@@ -119,7 +119,7 @@ operit-context-dashboard/
 ```jsonc
 {
   "at":"…","atMs":…,
-  "session":"0449d90e","chatId":"…",
+  "session":"a1b2c3d4","chatId":"…",
   "sender":"ai","roleName":"Viya",
   "contentLen":68528,
   "inputTokens":4566737,        // 该消息期间全部 API 往返的输入合计（非单次！见坑 §7）
@@ -227,14 +227,19 @@ return JSON.parse(r);
 
 **② 上限保护**：任何构成总量估算值 > 960,000 时，按比例压缩到 960,000（`anchorTo`，1M 安全线）。
 
-**③ 峰谷判定（DeepSeek 定价规则）**：
+**③ 峰谷判定（DeepSeek 定价规则，2026-09-19 官方更新口径）**：
 
 ```js
+// 法定节假日表：33 天（2026 国务院安排，数据源 holiday-cn）全天谷时
+HOLIDAYS = Set(['2026-01-01', ..., '2026-10-07'])   // 只列放假日；调休上班的周末无需列入
 cfg = { peaks: [{start:'09:00',end:'12:00'},{start:'14:00',end:'18:00'}], weekdaysOnly: true }
 isOffpeakAt(cfg, d):
-  if (weekdaysOnly && 周末) return true      // 周末全天谷时
-  return !peaks.some(p => 时间在 p 内)        // 工作日：非峰即谷
+  if (HOLIDAYS.has(localDateKey(d))) return true     // 法定节假日全天谷时
+  if (weekdaysOnly && 周末) return true              // 周末全天谷时（含调休上班）
+  return !peaks.some(p => 时间在 p 内)                // 工作日：非峰即谷
 // 支持跨零点窗口（st>en 时判断 cur>=st || cur<en）
+// 官方口径（2026-09-19 补充）：调休上班的周末、中国法定节假日全天均按空闲时段计费；
+// 高峰 = 周一至周五（不含中国法定节假日）9:00-12:00、14:00-18:00。
 ```
 
 **④ 会话费用（delta 算法）**：遍历消息（升序），逐条取增量并计费：
@@ -348,10 +353,12 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 | deepseek-v4-pro | 峰 | 0.30 | 9 | 27 |
 | deepseek-v4-pro | 谷 | 0.15 | 4.5 | 13.5 |
 
-### 6.2 峰谷规则（官方 2026-09）
+### 6.2 峰谷规则（官方 2026-09，含 09-19 节假日补充说明）
 
-- 峰时 = **北京时间工作日 09:00-12:00 与 14:00-18:00**（两个窗口）；
-- 其余时间（含周末全天）为谷时（谷价 = 峰价一半）。
+- 峰时 = **北京时间周一至周五（不含中国法定节假日）09:00-12:00 与 14:00-18:00**（两个窗口）；
+- 其余时间（含周末全天、调休上班的周末、法定节假日全天）为谷时（谷价 = 峰价一半）；
+- 法定节假日表（2026 年 33 天）内嵌于页面源码 `HOLIDAYS`（源：github.com/NateScarlet/holiday-cn），
+  只列放假日；次年安排公布后追加即可（表外年份退化为仅周末规则，行为与此前一致）。
 
 ### 6.3 计费口径
 
@@ -395,11 +402,12 @@ cost += ((dIn - cachePart) * tier.pin + cachePart * tier.pcache + dOut * tier.po
 30. **离线自检的「共用实现」提取约定（W7①）**：桥内 `W7_BRIEF BEGIN/END` 段被 `tools/w7_brief_check.cjs` 按标记切出、在 Node 里 new Function 复跑对拍全库 raw。**约定**：段内函数只允许依赖段内函数 + `fa2Unesc`/`fa2ToolTail`（同被提取），不得引用段外闭包/全局，否则检查会静默漂移。新增算法段照此办理（W3 的 focus_check 同模式）。
 31. **计费 Token 卡与口径区分（W7②，2026-09-17）**：`apiSessionUsage` 读**全库 chatmsg**（按天滚动）×过滤 `session===当前key`，对**完成态消息**求和 in/out/cached；卡（「Token 统计」，位于上下文统计卡之后）中心=Σ(in+out)，**输入部分按当前上下文构成比例分摊（≈）**、**输出段用 provider 真值**（同上游 `billedParts` 的「占比+锚定」）。**核心口径知识**：「消息级 inputTokens=该消息期间全部 API 往返的输入合计」——当「上下文大小」用是**错的**（W6 前踩过 1.8M 虚高），当「计费」用是**对的**（账单即此口径；一条 agent 消息动辄数 M 输入，多为缓存）。实现要点：输出段避撞色（violet 被图片段占用 → 用 `#f43f5e`）；`!(su.rows>0)` 防御旧桥默认返回（拦 undefined/NaN）；跨天会话读全部 chatmsg 文件拼接。
 32. **系统警告的「报错门类」链路口径（W8，2026-09-17）**：警告消息 = `kind=USER` 且 content 以 `<status type="warning">…</status>` 开头（**结构锚点正则** `/^<status[^>]*type="warning"[^>]*>/`，勿全文扫「warning」字样——正文可能含该词）。两类文案：①「检测到工具调用输出被截断…」=截断类（trunc）②「请输出正文内容…」=输出异常类（empty）；展示文本 = 去标签后的正文（`警告：…`）。警告是「虚拟轮」：进历史但不写快照——因此快照行 `skip=N` 即「两次装配间插入的 N 条警告」。**双数据源分工**：①事件卡「报错」chip = 当前 raw 扫描（带 preparedHistory 下标 idx，点击走 W3 focusIdx 协议直达 user 分类）；②趋势详情「跳过明细」= 留档（warnings-YYYYMMDD.jsonl，含已被压缩清除的历史）按时间附挂（±10s 最近邻）——raw 只有现存窗口，留档才有长历史。
-33. **警告留档的增量去重（V-R 自校正，W8）**：main.js 在每次装配扫可见警告（V=按文本条数），与留档（读最近 3 个 warnings-*.jsonl 重建的 R）逐文本对比，仅写 `max(0, V−R)` 条新行；**只有新增才写盘**（零新增零写盘；单行追加、读侧坏行容错）。写入含 `at/atMs`（捕获时刻近似——警告无自身时间戳，取「看到它的那次装配」时刻）、`session/chatId`、`type`、`text`、`idx`（写入时下标，仅参考）。**已知限制**：历史警告被上下文压缩清除后若再出现同类新警告，可能因 V≤R 被掩盖漏记（罕见，接受）；留档部署前的历史警告无法回填（skip 数仍在、明细缺，如 0449d90e / 8a0933db / 7ff1bc10）。
+33. **警告留档的增量去重（V-R 自校正，W8）**：main.js 在每次装配扫可见警告（V=按文本条数），与留档（读最近 3 个 warnings-*.jsonl 重建的 R）逐文本对比，仅写 `max(0, V−R)` 条新行；**只有新增才写盘**（零新增零写盘；单行追加、读侧坏行容错）。写入含 `at/atMs`（捕获时刻近似——警告无自身时间戳，取「看到它的那次装配」时刻）、`session/chatId`、`type`、`text`、`idx`（写入时下标，仅参考）。**已知限制**：历史警告被上下文压缩清除后若再出现同类新警告，可能因 V≤R 被掩盖漏记（罕见，接受）；留档部署前的历史警告无法回填（skip 数仍在、明细缺，如 a1b2c3d4 / b2c3d4e5 / c3d4e5f6）。
 34. **skipWarns 附挂与展示链（W8）**：桥 `apiTimeline` 尾部把留档警告按 `|warn.atMs − rec.t| < 10s` 最近邻附到对应 rec（`rec.skipWarns=[{wtype,text,at,atMs,idx}]`）；`apiSteps` 按 `t` 精确对齐把该轮**首步（step===1）**并入（step 各行的 t=该轮快照时间，同源可直配）；前端 `toRequests` 透传 → `aggregateByTurn` 轮聚合时合并（`[...last, ...req]`）→ 详情卡 `selectedInfo.skipWarns`（step 模式取 r、turn 模式取**聚合行**——轮模式 detail 的 r 与聚合行不同源，别从 r 取）。展示 = header「N」红标 + 底部「跳过明细」块（`[类型] 原文`）。
 
 
 35. **步 brief 按需化（W9①，2026-09-17 晚）**：大会话（146 步）打开面板真机 `apiSteps` 耗时 18.4–18.8s（`ui_bridge-20260917.jsonl` 实证 `steps=18795/18379ms`；node 对照仅 18–20ms——全耗在设备端 JS 引擎的全量 brief 重算）。改为上游式「derived CLIENT-SIDE」：`apiSteps` 只挂锚点 `rec.pIdx`；新增桥方法 `stepBrief`（dispatch `{m:"stepBrief", pIdx}`）单步现算 `w7BriefOne`；前端选中拉取 + `Map<pIdx, brief|null>` 会话内缓存（含 miss 缓存防重试；`state.session/state.requests` 变化时清空——压缩/切会话后 pIdx 会漂移）；失败/旧桥/无桥 → 详情卡无三行不崩。**口径**：`w7BriefOne` 与旧全量 `w7BriefOf` 第 s 项逐字节一致（`tools/w9_brief_one_check.cjs`：61 raw / 2634 步 0 差异）。**已知微差**：>1500 步保险截尾场景下，截尾首步的 opener 旧版为空、新版可能取到（方向更准，不追平）。验证资产：`tools/w9_brief_check.cjs`（结构自检，替代 w7_brief_check）、`tools/w9_brief_one_check.cjs`（新旧对拍）、`tools/w9_verify.cjs`（20 检查，替代 w7_verify）；旧两脚本已删除（档案 archive/w9_brief_ondemand_20260917/）。
+36. **法定节假日全天谷价（2026-10-05，页面 2.10.0）**：官方 2026-09-19 补充口径「调休上班的周末、中国法定节假日全天均按空闲时段计费」。实现：页面内嵌 `HOLIDAYS` 表（2026 年 33 个放假日，源 NateScarlet/holiday-cn）；`isOffpeakAt` 优先判节假日 → 谷。三要点：① 表只收放假日——调休上班的周末不列入（周末规则已覆盖）；② 表外年份自动退化为仅周末规则；③ 徽章 / 会话费用 / 今日花费共用同一函数，一处改全链生效（金额级 A/B：假日消息 ¥18 vs 全峰价 ¥24）。验证：`tools/holiday_check.cjs`（27 检查）+ `tools/holiday_verify.cjs`（徽章 / 金额 / 今日花费）。
 
 ---
 

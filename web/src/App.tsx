@@ -20,7 +20,8 @@ import type { ContextEventRecord, RequestRecord, StepBriefData } from './shared/
 const OVERRIDES: Record<string, string> = { 'cat.inject': '世界书', 'cat.profile': '用户资料', 'cat.summary': '对话总结', 'settings.title': '设置', 'settings.desc': '各卡显示的默认偏好 · 改动自动保存' }
 
 // ── 价格配置（峰谷双价，页面内可编辑，localStorage 持久；单位：人民币元/百万 token）──
-// 官方规则（2026-09 核实）：峰时 = 北京时间工作日 09:00-12:00、14:00-18:00（其余含周末为谷时）
+// 官方规则（2026-09-19 更新核实）：峰时 = 北京时间工作日（不含法定节假日）09:00-12:00、14:00-18:00；
+// 其余时段、周末（含调休上班日）与法定节假日全天均为谷时。
 type PriceTier = { pin: number; pcache: number; pout: number }
 type ModelPrice = { peak: PriceTier; offpeak: PriceTier }
 type PriceSpan = { start: string; end: string }
@@ -48,10 +49,35 @@ function inSpan(d: Date, sp: PriceSpan): boolean {
   if (st <= en) return cur >= st && cur < en
   return cur >= st || cur < en // 跨零点
 }
+// 法定节假日表（北京日历日，全天谷时）。2026 年国务院安排共 33 天（数据源：github.com/NateScarlet/holiday-cn）；
+// 只列放假日——调休上班的周末无需列入，周末本就全天谷时。次年安排公布后在此追加。
+const HOLIDAYS: ReadonlySet<string> = new Set([
+  // 元旦
+  '2026-01-01', '2026-01-02', '2026-01-03',
+  // 春节
+  '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19',
+  '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23',
+  // 清明节
+  '2026-04-04', '2026-04-05', '2026-04-06',
+  // 劳动节
+  '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+  // 端午节
+  '2026-06-19', '2026-06-20', '2026-06-21',
+  // 中秋节
+  '2026-09-25', '2026-09-26', '2026-09-27',
+  // 国庆节
+  '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05',
+  '2026-10-06', '2026-10-07',
+])
+function localDateKey(d: Date): string {
+  const m = d.getMonth() + 1, day = d.getDate()
+  return d.getFullYear() + '-' + (m < 10 ? '0' + m : String(m)) + '-' + (day < 10 ? '0' + day : String(day))
+}
 function isOffpeakAt(cfg: PriceConfig, d: Date): boolean {
+  if (HOLIDAYS.has(localDateKey(d))) return true // 法定节假日全天谷时
   if (cfg.weekdaysOnly) {
     const wd = d.getDay()
-    if (wd === 0 || wd === 6) return true // 周末全天谷时
+    if (wd === 0 || wd === 6) return true // 周末全天谷时（含调休上班）
   }
   return !cfg.peaks.some((sp) => inSpan(d, sp))
 }
@@ -882,7 +908,7 @@ export function App() {
                 <input type="text" inputMode="numeric" maxLength={5} value={sp.end} onChange={(e) => updPeak(i, 'end', e.target.value)} style={pInp} />
               </span>
             ))}
-            <span style={{ opacity: 0.55 }}>其余含周末为谷时</span>
+            <span style={{ opacity: 0.55 }}>其余含周末、法定节假日为谷时</span>
           </div>
           {Object.keys(priceCfg.models).map((name) => (
             <div key={name} style={{ marginBottom: 6 }}>

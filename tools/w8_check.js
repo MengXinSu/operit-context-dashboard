@@ -2,7 +2,7 @@
 // w8_check.js —— W8 报错门类离线自检（node 跑 prompt_viewer/raw_*.json + snapshots-*.jsonl）
 // 用法：node w8_check.js [main.js 路径] [index.ui.js 路径] [prompt_viewer 目录]
 // 检查：A 两实现（main.js W8_WARN ↔ 桥 W8_WARN_UI）全库扫描一致性（必须 0 差异）；
-//      B 警告数 vs skip 复算对拍（已知差异白名单：0449d90e——历史警告已被上下文压缩清除）；
+//      B 警告数 vs skip 复算对拍（已知差异白名单：a1b2c3d4——历史警告已被上下文压缩清除）；
 //      C w8CountNew 增量去重单测。报告落 /tmp/w8_report.txt；有 FAIL 退出码 1。
 const fs = require('fs');
 const MAIN = process.argv[2] || '/sdcard/Download/Operit/dev_package/com.operit.prompt_viewer_ui_v2/dist/main.js';
@@ -73,7 +73,7 @@ function skipBySession(pvDir) {
 }
 const skips = skipBySession(PV);
 // 基准集（预研 2026-09-17 四会话必须一致）；其余差异为数据历史状态（留档/快照部署前），列观察不判 FAIL
-const MUST_MATCH = ['0715207c', '20b39514', '25ffef96', '58e1a3ec'];
+const MUST_MATCH = ['d4e5f6a7', 'e5f6a7b8', 'f6a7b8c9', 'a7b8c9d0']; // 脱敏占位（原为预研四会话 ID；如需恢复基准校验按实际会话替换）
 const sessions = Array.from(new Set(Object.keys(warns).concat(Object.keys(skips)))).sort();
 const pairs = [];
 for (const s of sessions) {
