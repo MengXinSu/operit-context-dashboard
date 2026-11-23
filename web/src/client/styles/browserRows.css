@@ -1,0 +1,48 @@
+/* 上下文浏览器分类行色底：照抄 upstream/src/client/styles/browser.css:61-65（--lc-cat-hue 由 App.tsx 内联提供）。 */
+.lc-br-cat-row {
+  --lc-cat-tint: linear-gradient(118deg,
+    color-mix(in srgb, var(--lc-cat-hue, transparent) 9%, transparent),
+    transparent 52%,
+    color-mix(in srgb, var(--lc-cat-hue, transparent) 10%, transparent));
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; width: 100%;
+  border: 0; background: var(--lc-cat-tint), transparent;
+  color: var(--dsw-alias-label-primary); font: inherit;
+  padding: 7px 10px; cursor: pointer; text-align: left;
+  transition: background-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease-in-out);
+}
+.lc-br-cat-on { background: var(--lc-cat-tint), var(--dsw-alias-interactive-bg-hover); }
+.lc-br-cat-on i { box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
+.lc-br-cat-open { background: var(--lc-cat-tint), var(--dsw-alias-interactive-bg-hover); }
+/*
+ * P4-13 圆角化：分类色行从「直角横条 + 1px 分割线」改成 **8px 圆角条 + 相邻 2px 间隙**。
+ * 圆角照上游 `.lc-br-cat` 的 8px（upstream/src/client/styles/browser.css 里
+ * `.lc-br-cat { border-radius: 8px }`；本版没有那层 wrapper，圆角直接落在行上）。
+ *
+ * 关于原先的分割线：行底边 1px 是 App.tsx 行内 `borderBottom`，内联声明压不过，
+ * 已改为在 App.tsx 删掉那一处内联（见 P4-13 报告），本文件不写 `!important`——
+ * 上面 `.lc-br-cat-row` 的 `border: 0` 现在真正生效。
+ *
+ * 关于行间距：`.lc-br-cat-row + .lc-br-cat-row` 在真实 DOM 里**匹配不到**——每行都被
+ * `<div key={c.key}>` 包着（行 + 展开面板同层），行与行不是兄弟节点。因此改用行自身
+ * 的 margin-top 拿同样 2px 的间隙：展开时这 2px 落在「上一块（上一行或上一块展开面板）
+ * 与本行」之间，不会侵入本行自己的展开面板（面板本身有 4px 上内边距）。
+ * 首行会多出 2px，落在卡片标题下方（标题自带 10px margin-bottom），视觉无差。
+ */
+.lc-br-cat-row {
+  border-radius: 8px;
+  margin-top: 2px;
+  /*
+   * 行内联 padding 是 `9px 10px`（左右 10px：色点与文字离圆角边留呼吸，8px 圆角才看得
+   * 出来；上下仍 9px，行高不变）。本项目 tailwind.css 明确**不引 preflight**（见其文件头
+   * 「No preflight」），全站没有 `* { box-sizing }`，所以默认是 content-box：`width: 100%`
+   * 再加上左右 padding 会把行撑出父容器。左右 2px 时只溢 4px（被卡片 8-9px 内边距吃掉，
+   * 看不出来）；10px 时会溢 20px，直接顶出卡片边框 —— 那圈圆角就跑到卡片外面去了。
+   * 因此这里钉死 border-box：宽度恒等于卡片内容宽，padding 只压缩内部布局，不再外扩。
+   */
+  box-sizing: border-box;
+}
+
+.lc-br-cat-row i {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none;
+  transition: box-shadow var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease-in-out);
+}

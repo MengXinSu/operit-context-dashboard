@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.operit.prompt_viewer_ui",
+  "version": "2.11.0-o2.13",
+  "main": "dist/main.js",
+  "display_name": {
+    "zh": "上下文仪表盘",
+    "en": "Context Dashboard"
+  },
+  "description": {
+    "zh": "上下文仪表盘：把 Operit 每轮发给模型的提示词逐字落盘，并以可视化仪表盘呈现——统计、Token 构成、趋势、上下文浏览器、事件、文件活动、世界书。",
+    "en": "Context Dashboard: captures the exact prompt Operit sends to the model on every turn, and visualizes it - stats, token composition, trends, context browser, events, file activity, worldbook."
+  },
+  "enabled_by_default": true,
+  "subpackages": [],
+  "resources": [
+    {
+      "key": "dashboard_boot",
+      "path": "resources/dashboard/boot.html",
+      "mime": "text/html"
+    },
+    {
+      "key": "dashboard_app",
+      "path": "resources/dashboard/index.single.html",
+      "mime": "text/html"
+    }
+  ],
+  "workflow_templates": [],
+  "workspace_templates": [],
+  "api_version": "2.0.0"
+}

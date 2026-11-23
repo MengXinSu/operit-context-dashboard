@@ -1,0 +1,60 @@
+/* Based on dsh-context (https://github.com/bowenliang123/dsh-context, Apache-2.0); modified for the Operit platform. */
+/*
+ * P4-12 手机（WebView ~390px）密度修正层 — 本表最后引入，只装「PC 不该受影响」的
+ * 手机断点补丁。桌面/平板宽度的像素密度一律不改：所有规则都在
+ * `@media (max-width: 640px)` 内（宿主 index.html 有 viewport meta，WebView 的
+ * 布局视口就是 CSS 像素宽，390px 会命中）。
+ *
+ * 为什么不用 `@container lc-card (max-width: 640px)`：本页 PC 三卡并排时每张卡
+ * 只有 ~380px 宽（三列 = (1200 - 2×20 - 2×7) / 3），按卡宽命中会让「手机补丁」
+ * 落到 PC 上，违背「不要改 PC 密度」。用户反馈的挤压是手机视口问题，就按视口断。
+ */
+
+@media (max-width: 640px) {
+  /*
+   * ① 事件卡筛选 chips（全部/压缩/剪枝/注入/模型/技能/代理/报错 共 8 个 + 计数）。
+   * 390px 下卡内容宽 ~332px，8 个 chip 约 366px：整组在标题里挤到第二行，且
+   * 组内再折一次（「报错」掉第二行），标题区高度翻倍。
+   * 做法：让整组独占标题下方的完整一行、内部不折行、装不下就横向滑动（手机
+   * 原生手势；隐藏滚动条避免多出一条杠）。
+   * tsx 在组上写死了 inline style flexWrap:'wrap' / justifyContent:'flex-end' /
+   * marginLeft:'auto'（本任务不改 .tsx），inline 只能被 !important 覆盖 —— 这三条
+   * 是全部 !important 出现的原因；其余属性无 inline 竞争，普通声明即可。
+   * 注意 justify-content 不能留 flex-end：横向溢出时它会把开头推出可视区且
+   * 无法滑回去（经典 overflow + flex-end 陷阱）。
+   */
+  .lc-card-title .lc-kinds {
+    flex: 1 1 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    gap: 1px;
+    margin-left: 0 !important;
+    flex-wrap: nowrap !important;
+    justify-content: flex-start !important;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .lc-card-title .lc-kinds::-webkit-scrollbar { display: none; }
+  /* 缩一点字号/内边距，让 8 个 chip（含计数）尽量在一行里放下，滑动只作兜底。
+     chip 间距从 2px 收到 1px 是挤出这 ~7px 的关键：390px 卡片内容宽 332px、
+     组内可用 ~328px，8 chip + 6 个计数估算 ~305px（375px 视口下 ~313px 可用），
+     正常会话能整行放下；计数特别多（全部/注入都是三位数）时才会需要滑动。 */
+  .lc-kinds .lc-gran-btn { flex: none; padding: 3px 5px; font-size: 10.5px; white-space: nowrap; }
+  .lc-kinds .lc-kind-n { margin-left: 2px; }
+
+  /*
+   * ② 文件活动列表行距。窄卡（≤380px 卡宽）下 .lc-fa-row 由 tsx 的
+   * `@max-[380px]/lc-card:flex-wrap` 折成两行（路径 / 徽章+时间），而原 6px 上下
+   * 内边距 + 2px 行间距让两行糊在一起（用户：次数+时间+文件名挤）。
+   * 手机只加「呼吸感」：行内上下 9px、折行后行间距 4px、列表行距 4px，徽章
+   * 也抬到 2px 上下内边距；文件名右侧留 2px 再交给 flex 推挤，和数字分开。
+   * 桌面不受影响（本段在媒体查询内）。
+   */
+  .lc-fa-list { gap: 4px; }
+  .lc-fa-row { padding: 9px 7px; gap: 4px 8px; }
+  .lc-fa-path { padding-right: 2px; }
+  .lc-fa-badge { padding: 2px 7px; }
+  .lc-fa-time { margin-left: 2px; }
+}

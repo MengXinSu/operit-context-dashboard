@@ -1,0 +1,946 @@
+// Based on dsh-context (https://github.com/bowenliang123/dsh-context, Apache-2.0); modified for the Operit platform.
+/**
+ * Bespoke per-request history chart — no shared data-viz primitive — styled through the shared `--dsw-alias-*` tokens; helpers
+ * aggregateByTurn/attachMarkers are shared with ContextView. A long log renders only the virtual bar window around the
+ * viewport (timelineWindow.ts), with spacers holding the full grid's scroll length; the newest bars rise on mount,
+ * staggered left to right with the cascade capped for long logs (trendChart.css, `--lc-i` slots below). An optional
+ * duration curve (per-request wait + generation, supplied by the parent) overlays the bars with its own right-hand
+ * axis, linking the measured anchors straight across the unmeasured holes (durationCurveAnchored).
+ */
+
+import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type UIEvent } from 'react'
+import type { Category, ContextEventRecord, RequestRecord } from '../../shared/types'
+import { CATS, IMG_COLOR } from '../categories'
+import { containHorizontalOverscroll } from '../overscroll'
+import {
+  BAR_GAP, BAR_PITCH, BAR_W, TIMELINE_WINDOW_MIN, clampBarWindow, durationMaxMs, durationPartsOf,
+  initialBarWindow, nextBarWindow, windowPads, windowRangeFor,
+  type BarWindow, type DurationCurveGeometry, type DurationSample,
+} from './timelineWindow'
+import type { ViewKit } from '../viewkit'
+
+export interface TrendChartProps {
+  requests: RequestRecord[]
+  markers: (ContextEventRecord | undefined)[]
+  selectedSeq: number | null
+  hoveredSeq: number | null
+  activeTurn: number | null
+  granularity: 'step' | 'turn'
+  mode: 'total' | 'delta'
+  focusTurn: number | null
+  /** Mirrored category hover (shared with the overview and the browser): lights that category's segment in every bar. */
+  hoverCat: string | null
+  /**
+   * The browser's open category: every bar plots only that category's fold figure, with the axis rescaled
+   * to its own max. Null plots every category; an unrecognized key (a stale or hostile state) degrades to the
+   * unfocused chart.
+   */
+  focusCat?: string | null
+  /**
+   * Adaptive scale (the trend card's title-adjacent toggle): the axis is recomputed from the bars currently
+   * VISIBLE in the scroller and follows the scroll, so a spike far outside the window cannot flatten the bars
+   * on screen. Off = the whole retained log scales the axis, the historical behavior.
+   */
+  adaptive?: boolean
+  /**
+   * Per-request activity durations (model wait + generation, ms) for the duration curve, supplied by the
+   * bridge as a parallel array aligned 1:1 with `requests` (same length, same order). Absent, null, or of a
+   * different length (an impossible alignment) hides the whole curve — invented zeros are never plotted.
+   */
+  durations?: DurationSample[] | null
+  /**
+   * The duration curve's switch, owned by the parent's title row: on = draw the curve over the bars plus its
+   * right-hand duration axis, off = neither renders. It still needs `durations` to have anything to draw.
+   */
+  durationCurve?: boolean
+  onSelect: (seq: number | null) => void
+  onHover: (seq: number | null) => void
+  onHoverTurn: (turn: number | null) => void
+  onPickTurn: (turn: number) => void
+  onFocusTurnHandled: () => void
+}
+
+/**
+ * Collapse per-step requests into one bar per turn — each turn is represented by its LAST step's record, tagged `stepCount` for the bar's
+ * column width; the log keeps one turn's requests consecutive, so a run of equal turns collapses to its final record.
+ */
+export function aggregateByTurn(requests: RequestRecord[]): RequestRecord[] {
+  const out: RequestRecord[] = []
+  let runSteps = 0
+  for (const req of requests) {
+    const last = out.length > 0 ? out[out.length - 1] : null
+    if (last !== null && (last.turn ?? 0) === (req.turn ?? 0)) {
+      runSteps++
+      out[out.length - 1] = { ...req, stepCount: runSteps, skip: (req.skip ?? 0) + (last.skip ?? 0), skipWarns: [...(last.skipWarns || []), ...(req.skipWarns || [])] }
+    } else {
+      runSteps = 1
+      out.push({ ...req, stepCount: 1 })
+    }
+  }
+  return out
+}
+
+/**
+ * The per-turn step tallies the step-granularity labels lean on ("第 s 步 (共 n 步)") — the same count a
+ * turn-mode bar's `stepCount` carries. Records without a turn stamp pool under 0, the key the labels'
+ * `turn ?? 0` fallback reads; the getter answers 1 for a turn outside the list so a caller can never miss.
+ */
+export function turnStepsOf(requests: RequestRecord[]): (turn: number | undefined) => number {
+  const counts = new Map<number, number>()
+  for (const req of requests) {
+    const turn = req.turn ?? 0
+    counts.set(turn, (counts.get(turn) ?? 0) + 1)
+  }
+  return turn => counts.get(turn ?? 0) ?? 1
+}
+
+/**
+ * Attach each boundary event (compaction/prune) to the first request logged after it — one entry per index, for the ✂ marker and the detail
+ * chip; shared with the detail panel so both show the SAME event.
+ */
+export function attachMarkers(requests: RequestRecord[], events: ContextEventRecord[]): (ContextEventRecord | undefined)[] {
+  const markers: (ContextEventRecord | undefined)[] = new Array<ContextEventRecord | undefined>(requests.length)
+  for (const ev of events) {
+    if (ev.kind !== 'compaction' && ev.kind !== 'prune') continue
+    for (let r = 0; r < requests.length; r++) {
+      if (requests[r].seq >= ev.seq) {
+        if (markers[r] === undefined) markers[r] = ev
+        break
+      }
+    }
+  }
+  return markers
+}
+
+/**
+ * The chat→Context jump's target: the turn bar whose closing reply the user clicked — the relayed seq is a turn's LAST step, exactly the
+ * aggregate's record — or, when that turn has aged out of the host's retained window, the oldest retained bar. Resolved against turn
+ * aggregates, since the jump pins in turn granularity. Null only on an empty history.
+ */
+export function jumpTargetOf(requests: RequestRecord[], seq: number): RequestRecord | null {
+  for (const req of requests) if (req.seq === seq) return req
+  return requests.length > 0 ? requests[0] : null
+}
+
+/**
+ * The duration curve's geometry with ANCHOR LINKING. A sample carrying no measurement (`waitMs + outMs === 0`:
+ * the bridge matched no chatmsg rows for that request — the workbuddy provider reports 0 forever, and a tool
+ * round-trip's intermediate request has no message line at all) is a HOLE, never a measured zero: `durationPartsOf`
+ * answers null. Holes get no dot and no vertex of their own, but the line does NOT break there — it runs straight
+ * from the previous measured anchor to the next, so a log peppered with unmatched requests reads as one continuous
+ * curve instead of a chain of stubs. Rules:
+ *  - two or more anchors → ONE polyline through every anchor in column order (the crossing segment spans the holes);
+ *  - exactly one anchor  → that point alone, as a dot (a lone sample must not turn into a line);
+ *  - no anchor at all    → the empty geometry, which also keeps the right-hand axis hidden (trendChart's curveVisible).
+ * x is the column centre on the same BAR_PITCH grid the bars use; y maps the sample's total onto the 0..height bar
+ * area (0 ms on the baseline, the axis peak at the top). Both are clamped into the plot, so a narrowed adaptive
+ * scale can never draw outside the SVG. Exported for the headless geometry assertions.
+ */
+export function durationCurveAnchored(
+  samples: ReadonlyArray<DurationSample | null | undefined>,
+  height: number,
+  maxMs: number,
+): DurationCurveGeometry {
+  const empty: DurationCurveGeometry = { runs: [], dots: [] }
+  // No columns / no axis range / no plot height: nothing is plottable, and a zero max would divide by zero.
+  if (samples.length === 0 || !(maxMs > 0) || !(height > 0)) return empty
+  const scale = height / maxMs
+  const anchors: Array<[number, number]> = []
+  for (let i = 0; i < samples.length; i++) {
+    const parts = durationPartsOf(samples[i])
+    if (parts === null) continue
+    const y = Math.min(height, Math.max(0, height - parts.totalMs * scale))
+    anchors.push([i * BAR_PITCH + BAR_W / 2, Math.round(y * 100) / 100])
+  }
+  if (anchors.length === 0) return empty
+  // A single anchor is a dot, not a zero-length polyline: the halo circle marks it, and no axis change is implied.
+  if (anchors.length === 1) return { runs: [], dots: [anchors[0]] }
+  return { runs: [anchors.map(p => `${p[0]},${p[1]}`).join(' ')], dots: [] }
+}
+
+export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactElement {
+  const { t, fmt, fmtDuration, eventLabel, eventAt, catLabel } = kit
+  // Tooltip wording for a column whose activity was never measured (waitMs + outMs === 0 — see
+  // durationCurveAnchored). i18n.ts belongs to another owner this round, and the shared t() resolves an
+  // unknown key to the key itself, so the Chinese wording lives here as the fallback: the moment a
+  // `timing.unmeasured` entry lands, the tooltip follows it without touching this file.
+  const unmeasuredKey = 'timing.unmeasured'
+  const unmeasuredLabel = t(unmeasuredKey)
+  const unmeasured = unmeasuredLabel === unmeasuredKey ? '未测量' : unmeasuredLabel
+
+  const CHART_H = 112
+  // Quarter-mark label tops for the axis (mirrored to .lc-axis-q1/.lc-axis-q3 in trendChart.css): chart top 18
+  // plus a quarter/three-quarters of the 112px bar area, minus half the 11px label box (font-size 11, line-height 1).
+  const Q3_TOP = 41
+  const Q1_TOP = 97
+  // Delta axis ticks are signed: '+' only on positives — fmt already carries the minus for negatives.
+  const fmtSigned = (v: number): string => (v > 0 ? '+' : '') + fmt(v)
+  // The constant bar width/gap live in timelineWindow.ts: the virtual window is computed on the very same
+  // column pitch, so both files must read one pair of constants. Sparse histories don't stretch bars, dense
+  // ones scroll instead of compressing; the turn strip below mirrors the same grid.
+  // Entrance rise cap: only the newest columns join the grow-in cascade. Older bars mount WITHOUT the rise
+  // (see ChartBar's `rise` flag) so re-windowing on scroll never replays the entrance on already-seen bars.
+  const RISE_CAP = 200
+  // Entrance stagger cap: long logs render thousands of bars, so the grow-in cascade stops widening after
+  // this many columns and late bars simply join within the cap (trendChart.css delays by `--lc-i`).
+  const STAGGER_CAP = 20
+  // Neutral zebra, deliberately DISJOINT from the category palette — the strip must read as a partition layer, not a bottom segment of the
+  // composition bars.
+  const TURN_FILLS = [
+    'color-mix(in srgb, var(--color-neutral-500) 12%, transparent)',
+    'color-mix(in srgb, var(--color-neutral-500) 26%, transparent)',
+  ]
+  // Turn labels render at natural width (a 2-digit "12" is wider than a 14px turn bar) and overflow their block.
+  // Every label must stay on the single line, so the strip shrinks ALL labels to one font size — the largest at
+  // which the tightest adjacent pair still clears the gap (analytic widths below, no measurement) — and the
+  // measured chain in updateTurnLabels stays only as the last-resort guard past the floor. OVERHANG bounds how
+  // far a label can reach beyond its block (a generous read of "9999" at 10px) for the viewport-participation
+  // test; GAP is the breathing room between adjacent labels' boxes.
+  const LABEL_OVERHANG = 48
+  const LABEL_GAP = 2
+  // Label font sizing (the 10px base mirrors .lc-turn in trendChart.css): conservative upper-bound glyph width
+  // at the base size (6.5px per digit at 10px semibold), floored at 6px.
+  const LABEL_FONT = 10
+  const LABEL_FONT_MIN = 6
+  const estTurnLabel = (turn: number): number => 6.5 * String(turn).length
+  // The duration axis sits on the right, but `.lc-axis span` pins labels to the right edge (trendChart.css);
+  // its labels override the anchoring inline so they hug the axis' own outer edge.
+  const RIGHT_AXIS_SPAN: CSSProperties = { left: 0, right: 'auto' }
+
+  /**
+   * Focus a bar on one category (the browser's open category): the kept bucket carries its fold figure, the other
+   * buckets zero, and `total` IS the plotted figure — the downstream stack/tooltip math reads the derived record
+   * unchanged. The raw fold figures are plotted as-is: a per-request rescale against the provider prompt would drift
+   * with the heuristic's ratio error and fake growth into constant categories (a never-changing system prompt must
+   * plot flat).
+   */
+  const focusOf = (req: RequestRecord, cat: string): RequestRecord => {
+    const key = cat as Category | 'system' | 'tools'
+    const out: RequestRecord = { ...req }
+    const v = req[key] || 0
+    out.img = 0
+    out.total = v
+    for (const c of CATS) out[c.key] = c.key === key ? v : 0
+    return out
+  }
+
+  /**
+   * Delta mode: each category keeps the SIGNED change vs the previous record so bars can diverge
+   * above/below the zero line; `total` is the churn (summed magnitude), `net` the signed change
+   * for the tooltip; the first request starts from zero so the scale is change-driven, and per-request
+   * provider prompt/output are dropped (they are not deltas).
+   */
+  const deltaOf = (req: RequestRecord, prev: RequestRecord | null): RequestRecord => {
+    const { prompt: _prompt, output: _output, ...out } = req
+    let churn = 0
+    let net = 0
+    for (const c of CATS) {
+      const d = prev !== null ? (req[c.key] || 0) - (prev[c.key] || 0) : 0
+      out[c.key] = d
+      churn += Math.abs(d)
+      net += d
+    }
+    const di = prev !== null ? (req.img || 0) - (prev.img || 0) : 0
+    out.img = di
+    churn += Math.abs(di)
+    net += di
+    out.total = churn
+    out.net = net
+    return out
+  }
+
+  /** The visible window's own maxima (adaptive scale): the total-mode peak, the delta arms' up/down sums, and the peak activity. */
+  interface VisibleMax {
+    total: number
+    up: number
+    down: number
+    activeMs: number
+  }
+
+  interface ChartBarProps {
+    req: RequestRecord
+    marker: ContextEventRecord | undefined
+    selected: boolean
+    hovered: boolean
+    inTurn: boolean
+    maxTotal: number
+    /**
+     * Delta mode geometry: zero-line offsets in px (up from the top / down from the bottom of the bar area)
+     * and the uniform px-per-token scale — identical above and below the zero line, so a +n segment and a
+     * −n segment always draw the same height. All three absent in total mode; passed as PRIMITIVES so the
+     * memoized bar keeps its shallow-compare bailout.
+     */
+    upPx?: number
+    downPx?: number
+    deltaScale?: number
+    /** Bar index in the render order: the entrance grow-in stagger slot (capped inside, so a long log's cascade stays snappy). */
+    enterIndex: number
+    /** Whether this bar takes part in the entrance rise (only the newest RISE_CAP columns do); see the window's scroll-in note. */
+    rise: boolean
+    onSelect: (seq: number | null) => void
+    onHover: (seq: number | null) => void
+  }
+
+  // Memoized so a hover/selection change re-renders only the bars whose flags flipped — a long log renders just
+  // the virtual window's columns (timelineWindow.ts); `req`/`marker` keep stable identities because the parent
+  // memoizes its aggregation, so the default shallow compare suffices.
+  const ChartBar = memo(function ChartBar(props: ChartBarProps): ReactElement {
+    const { req, marker } = props
+    const markerAt = marker !== undefined ? eventAt(marker) : null
+    // Delta mode: diverging stacks — positive category deltas pile UP from the zero line, negative ones
+    // hang DOWN from it, both in category colors (direction carries the sign, color the category).
+    const diverge = props.upPx !== undefined && props.downPx !== undefined && props.deltaScale !== undefined
+    // Rise stagger slot, shared by the total stack and both delta arms (trendChart.css scaleY-opens them).
+    const enterStyle = { '--lc-i': Math.min(props.enterIndex, STAGGER_CAP) } as CSSProperties
+    // Bars outside the cap (and every bar mounted by a window move) skip the rise: replaying it on scroll-in
+    // would make the chart look like it re-grows whenever the reader scrolls back.
+    const riseCls = props.rise ? ' animate-lc-bar-in motion-reduce:animate-none' : ''
+    return (
+      <div
+        className={'lc-bar hover:bg-(--dsw-alias-bg-layer-2)'
+          + (props.selected ? ' lc-bar-selected' : '')
+          + (props.hovered ? ' lc-bar-hovered' : '')
+          + (props.inTurn ? ' lc-bar-in-turn' : '')}
+        data-seq={req.seq}
+        style={{ width: `${BAR_W}px` }}
+        onClick={() => { props.onSelect(props.selected ? null : req.seq) }}
+        onMouseEnter={() => { props.onHover(req.seq) }}
+      >
+        {marker !== undefined ? (
+          <span
+            className="lc-bar-marker"
+            title={'✂ ' + (markerAt !== null ? markerAt + ' — ' : '') + eventLabel(marker)}
+          >{'✂'}</span>
+        ) : null}
+        {req.skip ? (
+          <span className={'lc-bar-skip' + (marker !== undefined ? ' lc-bar-skip-r' : '')} title={t('tip.skip', { n: req.skip })}>{'!' + req.skip}</span>
+        ) : null}
+        {diverge ? (
+          <>
+            <div className={'lc-bar-up' + riseCls} style={{ bottom: `${props.downPx}px`, ...enterStyle }}>
+              {CATS.map((c) => {
+                const d = req[c.key] || 0
+                if (d <= 0) return null
+                return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(d * (props.deltaScale as number)))}px`, background: c.color }} />
+              })}
+              {(req.img || 0) > 0 ? (<div key="img" data-cat="img" className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round((req.img || 0) * (props.deltaScale as number)))}px`, background: IMG_COLOR }} />) : null}
+            </div>
+            <div className={'lc-bar-down' + riseCls} style={{ top: `${props.upPx}px`, ...enterStyle }}>
+              {CATS.map((c) => {
+                const d = req[c.key] || 0
+                if (d >= 0) return null
+                return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(-d * (props.deltaScale as number)))}px`, background: c.color }} />
+              })}
+              {(req.img || 0) < 0 ? (<div key="img" data-cat="img" className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(-(req.img || 0) * (props.deltaScale as number)))}px`, background: IMG_COLOR }} />) : null}
+            </div>
+          </>
+        ) : (
+          <div className={'lc-bar-stack' + riseCls} style={enterStyle}>
+            {CATS.map((c) => {
+              const v = req[c.key] || 0
+              if (!v) return null
+              // px (not %) heights: the stack is content-driven, so percentage heights would collapse against an indefinite base.
+              return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(v / props.maxTotal * CHART_H))}px`, background: c.color }} />
+            })}
+            {(req.img || 0) > 0 ? (<div key="img" data-cat="img" className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round((req.img || 0) / props.maxTotal * CHART_H))}px`, background: IMG_COLOR }} />) : null}
+          </div>
+        )}
+      </div>
+    )
+  })
+
+  return function TrendChart(props: TrendChartProps): ReactElement {
+    const delta = props.mode === 'delta'
+    // An unrecognized focus key degrades to the unfocused chart instead of plotting an empty axis.
+    const focus = props.focusCat !== null && props.focusCat !== undefined && CATS.some(c => c.key === props.focusCat)
+      ? props.focusCat
+      : null
+    const requests = useMemo(
+      () => {
+        const base = focus !== null ? props.requests.map(req => focusOf(req, focus)) : props.requests
+        return delta ? base.map((req, i) => deltaOf(req, i > 0 ? base[i - 1] : null)) : base
+      },
+      [props.requests, delta, focus],
+    )
+    const markers = props.markers
+    // Per-request activity for the duration curve: the bridge hands it over as a parallel array (same length,
+    // same order). A missing array — or one of a different length, an alignment that would be guesswork — hides
+    // the whole curve instead of plotting invented zeros.
+    const rawDurations = props.durations ?? null
+    const durationOn = props.durationCurve === true && rawDurations !== null && rawDurations.length === requests.length
+    const durations: DurationSample[] | null = durationOn ? rawDurations : null
+    // Adaptive scale: the maxima over the bars currently on screen. Null until the first measure, which falls
+    // back to the whole-log scale, so the first paint never draws an empty axis; the field-wise comparison means
+    // scrolling inside a window whose maxima do not move re-renders nothing.
+    const adaptive = props.adaptive === true
+    const [visMax, setVisMax] = useState<VisibleMax | null>(null)
+    const measureVisible = (el: HTMLDivElement): void => {
+      if (!adaptive) return
+      const n = requests.length
+      // Nothing measurable: an empty history, or a zero-width viewport (a hidden pane, an unlaid-out test DOM).
+      // Keeping the previous scale degrades the chart to the whole-log axis instead of flattening every bar.
+      if (n === 0 || el.clientWidth <= 0) return
+      const pitch = BAR_W + BAR_GAP
+      const sl = el.scrollLeft
+      const vr = sl + el.clientWidth
+      let total = 0
+      let up = 0
+      let down = 0
+      let activeMs = 0
+      // The column holding the left edge through the one holding the right edge; the per-column test then drops
+      // the neighbour whose column falls in the 2px gap just outside the viewport.
+      const from = Math.max(0, Math.floor(sl / pitch))
+      const to = Math.min(n - 1, Math.max(from, Math.floor((vr - 1) / pitch)))
+      for (let i = from; i <= to; i++) {
+        const col = i * pitch
+        if (col >= vr || col + BAR_W <= sl) continue
+        const req = requests[i]
+        if (durations !== null) {
+          // The duration curve's own visible peak, so a spike outside the window cannot flatten it (same rule
+          // as the bars' scale); unknown samples contribute nothing.
+          const parts = durationPartsOf(durations[i])
+          if (parts !== null && parts.totalMs > activeMs) activeMs = parts.totalMs
+        }
+        if (delta) {
+          // Per-bar arms, then the window maximum — the same figures the whole-log loop takes.
+          let bu = 0
+          let bd = 0
+          for (const c of CATS) {
+            const d = req[c.key] || 0
+            if (d > 0) bu += d
+            else bd -= d
+          }
+          const di = req.img || 0;
+          if (di > 0) bu += di; else bd -= di;
+          if (bu > up) up = bu
+          if (bd > down) down = bd
+        } else if (req.total > total) {
+          total = req.total
+        }
+      }
+      setVisMax(prev => prev !== null && prev.total === total && prev.up === up && prev.down === down && prev.activeMs === activeMs
+        ? prev
+        : { total, up, down, activeMs })
+    }
+    // Whole-log maxima: the axis when adaptive is off, and the fallback for a delta window with no change at all
+    // (it carries no scale of its own).
+    let maxTotal = 1
+    let maxUp = 0
+    let maxDown = 0
+    if (delta) {
+      for (const req of requests) {
+        let up = 0
+        let down = 0
+        for (const c of CATS) {
+          const d = req[c.key] || 0
+          if (d > 0) up += d
+          else down -= d
+        }
+        const di = req.img || 0;
+        if (di > 0) up += di; else down -= di;
+        if (up > maxUp) maxUp = up
+        if (down > maxDown) maxDown = down
+      }
+    } else {
+      for (const req of requests) {
+        if (req.total > maxTotal) maxTotal = req.total
+      }
+    }
+    if (adaptive && visMax !== null) {
+      if (delta) {
+        if (visMax.up + visMax.down > 0) {
+          maxUp = visMax.up
+          maxDown = visMax.down
+        }
+      } else {
+        maxTotal = Math.max(1, visMax.total)
+      }
+    }
+    // Duration axis: the whole log's peak, narrowed to the visible window's peak under adaptive scaling (the
+    // same policy the bars follow). A window with no known sample keeps the whole-log peak rather than
+    // collapsing the axis to a zero-height scale.
+    let maxActiveMs = durations !== null ? durationMaxMs(durations) : 0
+    if (durations !== null && adaptive && visMax !== null && visMax.activeMs > 0) maxActiveMs = visMax.activeMs
+    // Curve geometry is memoized on the samples and the axis: a hover/selection commit must not rebuild the
+    // polyline strings. No durations (or a switch that is off) yields the shared empty geometry; measured
+    // anchors are linked straight across the unmeasured holes (durationCurveAnchored), so the curve stays one
+    // continuous line instead of breaking at every 0/0 sample.
+    const durationGeometry = useMemo(
+      () => durationCurveAnchored(durations ?? [], CHART_H, maxActiveMs),
+      [durations, maxActiveMs],
+    )
+    // The zero line splits the bar area PROPORTIONALLY to the larger side, so the px-per-token scale
+    // is identical above and below it — a compaction's downward bar reads honestly against a growth bar.
+    const span = Math.max(1, maxUp + maxDown)
+    const deltaScale = CHART_H / span
+    const upPx = Math.round(maxUp * deltaScale)
+    const downPx = CHART_H - upPx
+    // A delta quarter mark (axis label + its dashed guide) yields ENTIRELY when its 11px label box would
+    // overlap the zero label (top 13+upPx) — the zero line is the reading reference. Total-mode marks never
+    // collide and always render.
+    const q3Clear = Math.abs(Q3_TOP - 13 - upPx) >= 11
+    const q1Clear = Math.abs(Q1_TOP - 13 - upPx) >= 11
+
+    // Consecutive same-turn requests collapse into one labeled range; `span` counts the STEP columns the group covers (step records count
+    // one each), so strip blocks align with the bars in both granularities.
+    const groups: { turn: number; count: number; span: number; agg: boolean }[] = []
+    for (const req of requests) {
+      let grp = groups.length > 0 ? groups[groups.length - 1] : null
+      if (grp === null || grp.turn !== (req.turn ?? 0)) {
+        grp = { turn: req.turn ?? 0, count: 0, span: 0, agg: req.stepCount !== undefined }
+        groups.push(grp)
+      }
+      grp.count++
+      grp.span += req.stepCount ?? 1
+    }
+
+    // Strip offsets/widths are computed in content px so the scroll handler can re-center labels analytically and measures only the handful
+    // of labels on screen.
+    const turnOffsets: number[] = []
+    const turnWidths: number[] = []
+    {
+      let x = 0
+      for (const grp of groups) {
+        const w = grp.agg ? BAR_W : grp.span * (BAR_W + BAR_GAP) - BAR_GAP
+        turnOffsets.push(x)
+        turnWidths.push(w)
+        x += w + BAR_GAP
+      }
+    }
+
+    // One font size for the whole strip: the largest at which the TIGHTEST adjacent pair of labels still clears
+    // the gap between their block centers (center distance = half each block + the gap between blocks), so every
+    // turn label stays shown on the single line instead of thinning out. Uniform (not per-label) so sizes never
+    // mix, and computed from the groups alone so it is stable while scrolling.
+    let labelFont = ''
+    {
+      let scale = 1
+      for (let i = 0; i + 1 < groups.length; i++) {
+        const avail = (turnWidths[i] + turnWidths[i + 1]) / 2 + BAR_GAP
+        const need = (estTurnLabel(groups[i].turn) + estTurnLabel(groups[i + 1].turn)) / 2 + LABEL_GAP
+        if (need > avail) scale = Math.min(scale, avail / need)
+      }
+      if (scale < 1) labelFont = `${Math.max(LABEL_FONT_MIN, Math.floor(LABEL_FONT * scale))}px`
+    }
+
+    // Default anchor: newest bars at the RIGHT edge; the first layout after mount scrolls unconditionally, a GRANULARITY SWITCH re-anchors
+    // the same way (step mode must not inherit the turn chart's stale left edge), otherwise stick to the end only while already near it;
+    // useLayoutEffect avoids a first-paint flash.
+    const scrollRef = useRef<HTMLDivElement | null>(null)
+    const scrolledOnce = useRef(false)
+    const lastGranRef = useRef(props.granularity)
+    // The newest bar's seq (or 0 when the log is empty): the layout effect only re-runs when the right edge genuinely
+    // moves (new bar appended, granularity switched, focus turn set) — hover/select changes keep their scroll position
+    // so the chart does not flash with every keystroke.
+    const lastSeqRef = useRef(0)
+    // The scrollWidth measured during the PREVIOUS effect pass. The "was the reader near the right edge?" check
+    // has to compare against the width as it was BEFORE the new bar landed — by the time the layout effect runs,
+    // `el.scrollWidth` is already the new (wider) value, so a near-edge check against it would miss the auto-follow.
+    const prevScrollWidthRef = useRef(0)
+    // Virtual bar window (timelineWindow.ts): a long log renders only the columns around the viewport, with two
+    // spacer pads holding the full grid's scroll length, so a 1000-bar session stays cheap while every scroll
+    // position, column coordinate and hover target keeps its place. Short logs (<= TIMELINE_WINDOW_MIN bars)
+    // render in full and behave exactly as before.
+    const windowed = requests.length > TIMELINE_WINDOW_MIN
+    const [barWindow, setBarWindow] = useState<BarWindow>(() => initialBarWindow(requests.length))
+    const barWindowRef = useRef(barWindow)
+    useLayoutEffect(() => { barWindowRef.current = barWindow }, [barWindow])
+    const winRafRef = useRef<number | null>(null)
+    const syncWindow = (el: HTMLDivElement): void => {
+      if (requests.length <= TIMELINE_WINDOW_MIN) return
+      const desired = windowRangeFor(el.scrollLeft, el.clientWidth, requests.length)
+      const prev = barWindowRef.current
+      const next = nextBarWindow(prev, desired, requests.length)
+      // The hysteresis bail returns `prev` itself, so an unchanged window commits nothing.
+      if (next === prev) return
+      barWindowRef.current = next
+      setBarWindow(next)
+    }
+    // The rAF callback and the observers need the LATEST closure (it captures `requests`); a ref keeps it fresh
+    // without tearing them down on every commit.
+    const syncWindowRef = useRef(syncWindow)
+    useLayoutEffect(() => { syncWindowRef.current = syncWindow })
+    // A scroll burst re-windows at most once per frame — a fling only needs the window it settles on.
+    const scheduleWindow = (el: HTMLDivElement): void => {
+      if (winRafRef.current !== null) return
+      winRafRef.current = requestAnimationFrame(() => {
+        winRafRef.current = null
+        syncWindowRef.current(el)
+      })
+    }
+    useLayoutEffect(() => () => {
+      if (winRafRef.current !== null) cancelAnimationFrame(winRafRef.current)
+    }, [])
+    /**
+     * Keep each turn label centered within its block's VISIBLE slice, then thin colliding labels: a label wider
+     * than its block overflows it, so consecutive narrow turns would smear into each other — walking left→right
+     * in content coordinates, a label whose box reaches the previous KEPT one drops to visibility:hidden. The
+     * render-time font shrink (labelFont) already sizes every label to clear its tightest neighbour, so this
+     * chain only fires past the 6px floor or on viewport-edge shifts. Blocks that cannot reach the viewport even
+     * overhung by a label skip their reads/writes entirely (their transform/visibility just reset); reads
+     * (offsetWidth) batch before the writes to avoid layout thrash, and unchanged styles write nothing.
+     */
+    const updateTurnLabels = (el: HTMLDivElement): void => {
+      const labels = el.querySelectorAll<HTMLElement>('.lc-turn-label')
+      const n = Math.min(labels.length, turnOffsets.length)
+      const sl = el.scrollLeft
+      const vr = sl + el.clientWidth
+      const writes: [HTMLElement, string, string][] = []
+      // Right edge (content px) of the last kept label's box plus the gap; -Infinity opens the chain.
+      let chainR = -Infinity
+      for (let i = 0; i < n; i++) {
+        const off = turnOffsets[i]
+        const w = turnWidths[i]
+        let dx = 0
+        let vis = ''
+        if (off + w + LABEL_OVERHANG > sl && off - LABEL_OVERHANG < vr) {
+          const lw = labels[i].offsetWidth
+          const visL = Math.max(off, sl)
+          const visR = Math.min(off + w, vr)
+          if (visR > visL && lw < w) {
+            const center = (visL + visR) / 2 - off
+            dx = Math.min(Math.max(center, lw / 2), w - lw / 2) - w / 2
+          }
+          const left = off + w / 2 + dx - lw / 2
+          if (left < chainR) vis = 'hidden'
+          else chainR = left + lw + LABEL_GAP
+        }
+        const next = dx !== 0 ? `translateX(${dx}px)` : ''
+        if (labels[i].style.transform !== next || labels[i].style.visibility !== vis) writes.push([labels[i], next, vis])
+      }
+      for (const [label, next, vis] of writes) {
+        label.style.transform = next
+        label.style.visibility = vis
+      }
+    }
+    useLayoutEffect(() => {
+      const el = scrollRef.current
+      /* v8 ignore next 1 -- the scroll div renders unconditionally and React
+         attaches refs before layout effects run; el is never null here. */
+      if (el === null) return
+      const newestSeq = requests.length === 0 ? 0 : requests[requests.length - 1].seq
+      const grew = newestSeq !== lastSeqRef.current
+      const widthBeforeAppend = prevScrollWidthRef.current
+      if (props.granularity !== lastGranRef.current) {
+        lastGranRef.current = props.granularity
+        scrolledOnce.current = false
+      }
+      // A strip-clicked focus turn centers its bar instead of the newest anchor, consumed once via onFocusTurnHandled — also when
+      // granularity was already 'turn' (no re-anchor happens that render).
+      if (props.focusTurn !== null) {
+        const gi = groups.findIndex(g => g.turn === props.focusTurn)
+        if (gi >= 0) {
+          scrolledOnce.current = true
+          el.scrollLeft = Math.max(0, gi * (BAR_W + BAR_GAP) + BAR_W / 2 - el.clientWidth / 2)
+        }
+        props.onFocusTurnHandled()
+      } else if (!scrolledOnce.current) {
+        scrolledOnce.current = true
+        el.scrollLeft = el.scrollWidth
+      } else if (grew && el.scrollLeft + el.clientWidth >= widthBeforeAppend - 24) {
+        // Only follow the latest bar when the right edge actually moved AND the reader was already near it
+        // BEFORE the new bar landed — comparing against the new scrollWidth would silently drop the stick for a
+        // mid-chart reader whose viewport just slid past the near-end threshold.
+        el.scrollLeft = el.scrollWidth
+      }
+      lastSeqRef.current = newestSeq
+      prevScrollWidthRef.current = el.scrollWidth
+      updateTurnLabels(el)
+      syncTip(el)
+      measureVisible(el)
+      // The anchor above may have moved (append / granularity switch / focus turn): commit the window the new
+      // scroll position needs before paint, so the first visible frame is never padded out.
+      syncWindowRef.current(el)
+    }, [props.granularity, props.focusTurn, requests, adaptive])
+
+    // The observer callback needs the LATEST measure closure (it captures `requests`/`delta`); a ref keeps it fresh
+    // without tearing the observer down on every commit.
+    const measureRef = useRef(measureVisible)
+    useLayoutEffect(() => { measureRef.current = measureVisible })
+    // A pane resize (sidebar collapse/drag, window resize) changes the visible window without any render, so the
+    // observer re-measures (and re-windows, since the window's column span depends on the client width). jsdom
+    // exposes no ResizeObserver — the commit/scroll measures cover those paths.
+    useLayoutEffect(() => {
+      const el = scrollRef.current
+      /* v8 ignore next 1 -- the scroll div renders unconditionally and React
+         attaches refs before layout effects run; el is never null here. */
+      if (el === null) return
+      if (typeof ResizeObserver !== 'function') return
+      const observer = new ResizeObserver(() => {
+        measureRef.current(el)
+        syncWindowRef.current(el)
+      })
+      observer.observe(el)
+      return () => { observer.disconnect() }
+    }, [])
+    // A horizontal swipe running off the chart's edge must not chain into the browser's history navigation
+    // (overscroll.ts): the sheet's overscroll-behavior-x covers Chromium/Firefox, this covers WebKit.
+    useLayoutEffect(() => {
+      const el = scrollRef.current
+      /* v8 ignore next 1 -- the scroll div renders unconditionally and React
+         attaches refs before layout effects run; el is never null here. */
+      if (el === null) return
+      return containHorizontalOverscroll(el)
+    }, [])
+
+    // Compact hover tooltip, shown instantly by the custom `.lc-chart-tip` (the native title is delayed):
+    // identity and the bar's total — the SAME value the bar height and axis are scaled against (the fold's
+    // heuristic figure, matching every other card). Identity phrasing follows the granularity —
+    // turn bars always speak TURN (the aggregate's step count, singular for a 1-step turn; a record missing
+    // stepCount degrades to that too), step bars carry the step index plus the turn's step total. Delta swaps
+    // the metric row for the net. With the duration curve on, a third row carries the hovered request's
+    // activity split — the very value the curve plots.
+    const stepsOf = useMemo(() => turnStepsOf(props.requests), [props.requests])
+    const tipRowsOf = (req: RequestRecord, idx: number): [string, string][] => {
+      const n = req.stepCount ?? 1
+      const head = props.granularity === 'turn'
+        ? (n > 1 ? t('tip.turn', { t: req.turn ?? 0, n }) : t('tip.turn1', { t: req.turn ?? 0 }))
+        : t('tip.step', { t: req.turn ?? 0, s: req.step ?? 0, n: stepsOf(req.turn) })
+      const rows: [string, string][] = []
+      if (delta) {
+        /* v8 ignore next 1 -- delta mode only receives records from
+           deltaOf, which always assigns net; the fallback is defensive. */
+        const net = req.net ?? 0
+        rows.push([head, t('tip.delta', { n: (net > 0 ? '+' : '') + fmt(net) })])
+      } else {
+        // Focused: the metric row IS the focused category's figure, so the tip names it instead of claiming a total.
+        rows.push([head, focus !== null
+          ? t('tip.cat', { cat: catLabel(focus), n: fmt(req.total) })
+          : t('tip.total', { n: fmt(req.total) })])
+      }
+      if (durations !== null && idx >= 0) {
+        const parts = durationPartsOf(durations[idx])
+        if (parts !== null) {
+          // Only the halves that were actually measured: an unmatched half reads 0 and is left out of the split
+          // instead of being reported as an instant phase.
+          const split: string[] = []
+          if (parts.waitMs > 0) split.push(`${t('timing.ttft')} ${fmtDuration(parts.waitMs)}`)
+          if (parts.outMs > 0) split.push(`${t('timing.gen')} ${fmtDuration(parts.outMs)}`)
+          rows.push([t('timing.total'), split.length > 0
+            ? `${fmtDuration(parts.totalMs)}（${split.join(' · ')}）`
+            : fmtDuration(parts.totalMs)])
+        } else {
+          // A HOLE in the curve: 0/0 means the bridge matched no chatmsg rows, not an instant request. The row
+          // says "未测量" so the tooltip never claims a 0s duration for a column it cannot account for.
+          rows.push([t('timing.total'), unmeasured])
+        }
+      }
+      return rows
+    }
+    const hoveredIdx = props.hoveredSeq !== null ? requests.findIndex(r => r.seq === props.hoveredSeq) : -1
+    const hoveredReq = hoveredIdx >= 0 ? requests[hoveredIdx] : null
+
+    // Column center (content px) of the currently hovered bar, for syncTip reads outside the render pass.
+    const tipColRef = useRef(0)
+
+    /**
+     * Glue the hover tip to its bar's VISIBLE slice. The tip deliberately does NOT live inside the scrolling
+     * content: an absolutely-positioned child of a scroller contributes to its scrollable overflow, so a wide
+     * reply preview on a right-edge bar used to inflate scrollWidth on every hover and flap the horizontal
+     * scrollbar open/closed — jumping the whole card. Reads (offsetWidth/clientWidth) batch before the single
+     * style write; unchanged transforms write nothing.
+     */
+    const syncTip = (el: HTMLDivElement): void => {
+      /* v8 ignore next 1 -- the scroll div renders unconditionally while mounted, so its parent exists. */
+      const tip = (el.parentElement ?? document.body).querySelector<HTMLElement>('.lc-chart-tip')
+      // No hover, nothing to place.
+      if (tip === null) return
+      const lw = tip.offsetWidth
+      const cw = el.clientWidth
+      // Center over the bar's visible slice, clamped so the tip never hangs past either edge nor gets cut off; a tip
+      // wider than the viewport centers over it instead of picking a bogus side on an inverted clamp window.
+      const half = Math.min(lw / 2, cw / 2)
+      const cx = Math.min(Math.max(tipColRef.current - el.scrollLeft, half), cw - half)
+      const next = `translate(${Math.round(cx - lw / 2)}px, 0)`
+      if (tip.style.transform !== next) tip.style.transform = next
+    }
+
+    // Position (and re-position after EVERY commit — the tip mounts on hover changes, which touch no other
+    // effect dependency here) from the committed hovered column before paint.
+    useLayoutEffect(() => {
+      /* v8 ignore next 1 -- the scroll div renders unconditionally and React attaches refs before
+         layout effects run; el is never null here. */
+      if (scrollRef.current === null) return
+      tipColRef.current = hoveredIdx >= 0 ? hoveredIdx * (BAR_W + BAR_GAP) + BAR_W / 2 : 0
+      syncTip(scrollRef.current)
+    })
+
+    // The committed window, clamped to the current log (a data refresh or a granularity switch may have shrunk
+    // it), then the spacers and the slice of columns it actually renders.
+    const shown = windowed
+      ? clampBarWindow(barWindow, requests.length)
+      : { from: 0, to: Math.max(0, requests.length - 1) }
+    const shownFrom = shown.from
+    const shownTo = shown.to
+    const pads = windowPads(shownFrom, shownTo, requests.length)
+    const shownBars = requests.slice(shownFrom, shownTo + 1)
+    const riseFrom = Math.max(0, requests.length - RISE_CAP)
+    // Any measured anchor at all lights the curve; a log with no measurement stays hidden along with its axis.
+    // The single-anchor case is a lone dot (durationCurveAnchored), so runs.length is 0 while dots.length is 1.
+    const curveVisible = durationGeometry.runs.length > 0 || durationGeometry.dots.length > 0
+
+    return (
+      <div className="lc-chartrow">
+        <div className="lc-axis">
+          {delta ? (
+            <>
+              <span className="lc-axis-top">{fmtSigned(maxUp)}</span>
+              {/* Axis quartile marks on the uniform px-per-token scale (the value at each fixed height); a mark
+                  whose 11px label box would overlap the zero label drops itself — the zero line is the reading
+                  reference and keeps its place. */}
+              {q3Clear
+                ? <span className="lc-axis-q3">{fmtSigned(Math.round(maxUp - span / 4))}</span>
+                : null}
+              {/* The 0 label rides the zero line (chart top padding 18px, half the 11px line-height up). */}
+              <span className="lc-axis-mid" style={{ top: `${13 + upPx}px` }}>{'0'}</span>
+              {q1Clear
+                ? <span className="lc-axis-q1">{fmtSigned(Math.round(maxUp - 3 * span / 4))}</span>
+                : null}
+              <span className="lc-axis-bot">{fmtSigned(-maxDown)}</span>
+            </>
+          ) : (
+            <>
+              <span className="lc-axis-top">{fmt(maxTotal)}</span>
+              <span className="lc-axis-q3">{fmt(Math.round(maxTotal * 3 / 4))}</span>
+              <span className="lc-axis-mid">{fmt(Math.round(maxTotal / 2))}</span>
+              <span className="lc-axis-q1">{fmt(Math.round(maxTotal / 4))}</span>
+              <span className="lc-axis-bot">{'0'}</span>
+            </>
+          )}
+        </div>
+        {/* Only the scrolling CONTENT lives under .lc-chart-scroll; the hover tip sits beside it inside the
+            positioned wrapper instead of inside the scroller — absolutely-positioned children of a scroller
+            contribute to its scrollable overflow AND translate away with the content on scroll. */}
+        <div className="lc-chart-wrap">
+          <div
+            className={'lc-chart-scroll' + (props.activeTurn !== null ? ' lc-chart-dim' : '')}
+            ref={scrollRef}
+            onScroll={(e: UIEvent<HTMLDivElement>) => {
+              updateTurnLabels(e.currentTarget)
+              syncTip(e.currentTarget)
+              measureVisible(e.currentTarget)
+              scheduleWindow(e.currentTarget)
+            }}
+          >
+            <div
+              className="lc-chart"
+              // The shared category hover rides a plain attribute: the CSS lights that key's segment in EVERY bar
+              // and recedes the rest, so the memoized bars never re-render on a cross-card hover change.
+              data-catdim={props.hoverCat ?? undefined}
+              onMouseLeave={() => { props.onHover(null) }}
+            >
+              <div className="lc-grid lc-grid-top" />
+              {/* Dashed guides aligning the bars with the axis quarter marks (fixed heights, both modes); a delta
+                  mark that yielded to the zero label drops its guide too, and a coinciding guide sits under the
+                  solid zero line painted after it. */}
+              {(!delta || q3Clear) ? <div className="lc-grid lc-grid-q3" /> : null}
+              {(!delta || q1Clear) ? <div className="lc-grid lc-grid-q1" /> : null}
+              {!delta ? <div className="lc-grid lc-grid-mid" /> : null}
+              {/* The SOLID zero baseline — the reading reference in both modes: inline-positioned off the up-arm
+                  in delta mode, the chart floor (CSS default) under the '0' label in total mode. */}
+              <div className="lc-grid lc-grid-zero" style={delta ? { top: `${18 + upPx}px` } : undefined} />
+              {/* Spacers hold the unrendered columns' share of the scroll length, so a windowed log keeps the
+                  same scrollbar range and the same scroll positions as a full render would, at O(view) DOM
+                  instead of O(log). */}
+              {pads.left > 0 ? <div style={{ width: `${pads.left}px`, flex: 'none' }} aria-hidden="true" /> : null}
+              {shownBars.map((req, k) => {
+                const i = shownFrom + k
+                return (
+                  <ChartBar
+                    // Granularity belongs in the key: a turn aggregate IS its last step's record (the same
+                    // seq), so a step ↔ turn switch would otherwise REUSE that bar's DOM node and its finished
+                    // entrance rise would not replay — every turn's last step bar would pop in unanimated.
+                    key={`${req.seq}:${props.granularity}`}
+                    req={req}
+                    marker={markers[i]}
+                    selected={props.selectedSeq === req.seq}
+                    hovered={props.hoveredSeq === req.seq}
+                    inTurn={props.activeTurn !== null && (req.turn ?? 0) === props.activeTurn}
+                    maxTotal={maxTotal}
+                    upPx={delta ? upPx : undefined}
+                    downPx={delta ? downPx : undefined}
+                    deltaScale={delta ? deltaScale : undefined}
+                    enterIndex={i}
+                    rise={i >= riseFrom}
+                    onSelect={props.onSelect}
+                    onHover={props.onHover}
+                  />
+                )
+              })}
+              {pads.right > 0 ? <div style={{ width: `${pads.right}px`, flex: 'none' }} aria-hidden="true" /> : null}
+              {/* Duration curve (absolute, so it never joins the flex column grid): ONE polyline through every
+                  measured anchor, linked straight across the holes the bridge could not measure, plus a dot when
+                  the whole log holds a single anchor. Drawn over the bars at the columns' own centres; its y axis
+                  lives on the right, and its ink follows the theme tokens rather than hard-coded colors.
+                  trendChart.css has no .lc-duration rules — the geometry is inline so the stylesheet stays
+                  another owner's file. */}
+              {curveVisible ? (
+                <svg
+                  className="lc-duration"
+                  width={requests.length * (BAR_W + BAR_GAP) - BAR_GAP}
+                  height={CHART_H}
+                  style={{ position: 'absolute', top: 18, left: 0, zIndex: 1, overflow: 'visible', pointerEvents: 'none' }}
+                  aria-hidden="true"
+                >
+                  {durationGeometry.runs.map((points, ri) => (
+                    <Fragment key={`run-${ri}`}>
+                      <polyline points={points} style={{ fill: 'none', stroke: 'var(--dsw-alias-bg-layer-1)', strokeWidth: 3, strokeLinejoin: 'round', strokeLinecap: 'round', opacity: 0.85 }} />
+                      <polyline points={points} style={{ fill: 'none', stroke: 'var(--dsw-alias-label-tertiary)', strokeWidth: 1.25, strokeLinejoin: 'round', strokeLinecap: 'round' }} />
+                    </Fragment>
+                  ))}
+                  {durationGeometry.dots.map((p, di) => (
+                    <Fragment key={`dot-${di}`}>
+                      <circle cx={p[0]} cy={p[1]} r={2} style={{ stroke: 'none', fill: 'var(--dsw-alias-bg-layer-1)' }} />
+                      <circle cx={p[0]} cy={p[1]} r={1.2} style={{ stroke: 'none', fill: 'var(--dsw-alias-label-tertiary)' }} />
+                    </Fragment>
+                  ))}
+                </svg>
+              ) : null}
+            </div>
+            {/* Turn strip: one COLOR BLOCK per turn spanning exactly its bars' columns, so the partition reads at a glance and lines
+                up with the steps; hovering a block highlights that turn's bars and vice versa — one shared hover-only state.
+                */}
+            <div className="lc-turns" style={labelFont !== '' ? { fontSize: labelFont } : undefined} onMouseLeave={() => { props.onHoverTurn(null) }}>
+              {groups.map((grp, gi) => {
+                const on = props.activeTurn === grp.turn
+                return (
+                  <span
+                    key={`turn-${gi}`}
+                    className={'lc-turn' + (on ? ' lc-turn-on' : '')}
+                    style={{
+                      width: `${turnWidths[gi]}px`,
+                      background: TURN_FILLS[gi % TURN_FILLS.length],
+                    }}
+                    title={`T${grp.turn}`}
+                    onMouseEnter={() => { props.onHoverTurn(grp.turn) }}
+                    onClick={() => { props.onPickTurn(grp.turn) }}
+                  ><span className="lc-turn-label">{`${grp.turn}`}</span></span>
+                )
+              })}
+            </div>
+          </div>
+          {/* Compact hover tooltip (identity / bar total / the curve's activity when it is on), shown instantly
+              by the custom `.lc-chart-tip` (the native title is delayed); the per-category breakdown lives in the
+              detail panel below. It floats ABOVE the plot (CSS bottom anchoring) so it never covers the bars, is
+              capped at the wrapper's width and wrapped, and is positioned imperatively over its bar's visible
+              slice (syncTip) so scrolling keeps it glued without ever widening the scrollable area. */}
+          {hoveredReq !== null ? (
+            <div className="lc-chart-tip">{tipRowsOf(hoveredReq, hoveredIdx).map((row, i) => <span key={i}>{row.join(' ')}</span>)}</div>
+          ) : null}
+        </div>
+        {/* The duration curve's own axis, on the opposite side of the plot: the bar axis (token heights) and this
+            one (ms) are independent scales, so they must not be confused for one another. Its spans get inline
+            right-alignment aliases because trendChart.css's `.lc-axis span { right: 0 }` cannot be edited here. */}
+        {curveVisible ? (
+          <div className="lc-axis" style={{ width: 34, flex: 'none' }}>
+            <span className="lc-axis-top" style={RIGHT_AXIS_SPAN}>{fmtDuration(maxActiveMs)}</span>
+            <span className="lc-axis-q3" style={RIGHT_AXIS_SPAN}>{fmtDuration(Math.round(maxActiveMs * 3 / 4))}</span>
+            <span className="lc-axis-mid" style={RIGHT_AXIS_SPAN}>{fmtDuration(Math.round(maxActiveMs / 2))}</span>
+            <span className="lc-axis-q1" style={RIGHT_AXIS_SPAN}>{fmtDuration(Math.round(maxActiveMs / 4))}</span>
+            <span className="lc-axis-bot" style={RIGHT_AXIS_SPAN}>{'0'}</span>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+}

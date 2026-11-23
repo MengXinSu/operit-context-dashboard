@@ -1,0 +1,33 @@
+/* Operit 移植补丁：页面底色。
+   dsh-context 原版运行在 DSH 宿主里，页面背景由宿主（chat 区域）提供；移植到 WebView
+   后需要自己补上。两套主题的画布都来自 lc-tokens.css 的 `--lc-canvas`：
+   深色是 neutral-bluish-1000（比 bg-base 再暗一档，卡片才浮得起来），浅色是
+   neutral-bluish-75（卡片在 tinted 画布上带阴影浮起，见 base.css 的 light .lc-card 规则）。
+   `color-scheme` 让 WebView 的原生滚动条/表单控件（价格输入框等）跟随主题，
+   而不是在深色页面里露出一条浅色 UA 滚动条。
+   html 与 body 同色：避免动画/过滚动时露出未绘制区域。 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+html {
+  background: var(--lc-canvas, transparent);
+}
+body {
+  background: var(--lc-canvas, var(--dsw-alias-bg-base));
+}
+body[data-ds-dark-theme] { color-scheme: dark; }
+body:not([data-ds-dark-theme]) { color-scheme: light; }
+/* W6: transient flash notice (open failure etc.; auto-dismiss, no persistence) */
+.lc-flash { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 99; max-width: 82vw; padding: 6px 12px; border-radius: 8px; background: rgba(20, 20, 20, 0.85); color: #fff; font-size: 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25); }
+/* PC 宽屏自适应：手机（~390px WebView）仍是 100% 满宽单列；宽屏放开到 1200 居中，
+   替换原先 App.tsx 里硬编码的 maxWidth: 600（把内容挤成中间一条窄条）。
+   用百分比宽度而非 100vw：WebView 里 100vw 含滚动条，会横溢出。
+   本 sheet 最后引入，覆盖 base.css 的 .lc-root 只补宽度，不动其 padding/滚动。 */
+.lc-root {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  min-height: 100vh;
+}

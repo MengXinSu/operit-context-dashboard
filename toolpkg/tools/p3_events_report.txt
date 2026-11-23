@@ -1,0 +1,91 @@
+== P3-2 采集层自检报告 ==
+main.js: <repo>/toolpkg/dist/main.js（1229 行）
+EVENTS_V1 纯函数段: 347 行（node 复跑的就是这段真代码）
+
+-- A. 真样本 · package_proxy 解包 --
+raw 7 份 | TOOL_CALL 406 | package_proxy 333 | 缺 tool_name 跳过 0 | 解包后仍叫 package_proxy 0
+top10 真实工具名:
+  1. super_admin:bash  243
+  2. operit_editor:operit_editor  35
+  3. super_admin:shell  14
+  4. list_files  13
+  5. grep_code  11
+  6. read_file  10
+  7. worldbook_tools_plus:list_entries  10
+  8. use_package  9
+  9. worldbook_tools_plus:delete_entry  8
+  10. visit_web  7
+
+-- B. 真样本 · events --
+  raw_<key-B>.json  history=1 calls=0 proxy=0 → events=0  0.19ms
+  raw_<key-G>.json  history=1 calls=0 proxy=0 → events=0  0.02ms
+  raw_<key-C>.json  history=588 calls=195 proxy=178 → events=0  4.39ms
+  raw_<key-D>.json  history=172 calls=62 proxy=43 → events=0  0.76ms
+  raw_<key-E>.json  history=59 calls=21 proxy=12 → events=0  0.14ms
+  raw_<key-F>.json  history=2 calls=0 proxy=0 → events=0  0.01ms
+  raw_<key-A>.json  history=396 calls=128 proxy=100 → events=0  1.40ms
+真样本事件合计: 0 → 空即真相：这 6 个会话里没有真实的 todo/goal/ask/team 调用（与 P0 预研一致）
+独立审计（不看候选预筛，全量扫参数形态）: 命中 0 条 → 确实没有 milestones 形态的参数
+events 文件顶层字段: updatedAt,updatedAtMs,chatId,key,version,timeSource,historyCount,events
+
+-- C. 合成 fixture（判定规则 + 空安全） --
+  PASS  todo add+done（含 TOOL_RESULT 回填）  →  {"todo-add":1,"todo-done":2}
+  PASS  todo 状态来自 TOOL_RESULT（调用参数里没有）  →  {"todo-add":1}
+  PASS  goal create+complete  →  {"goal-create":1,"goal-complete":1}
+  PASS  ask questions（2 问）  →  {"ask":1}
+  PASS  team task create→complete（同一 id 折叠）  →  {"team-task-create":1,"team-task-complete":1}
+  PASS  agent + skill（含 agent_status / skill_list 两条反例不记）  →  {"agent":1,"skill":1}
+  PASS  空历史  →  空
+  PASS  null 历史  →  空
+  PASS  非数组历史  →  空
+  PASS  垃圾条目不崩  →  空
+  PASS  package_proxy 缺 tool_name（跳过不猜）  →  空
+  PASS  todo 形态不对（缺 status 不认）  →  空
+  PASS  goal 无 objective（不猜）  →  空
+  实体解码 / proxy 真实名 / params JSON 解码单测: PASS
+
+-- D. 接线静态校验 --
+  PASS  pathsFor 缺 events 路径
+  PASS  钩子里没调用 collectEvents
+  PASS  事件没有走 writeText 原子写
+  PASS  pruneSessionFiles 未清理 events
+  PASS  cleanupOldData 未识别 events 文件
+  PASS  索引写回判定丢失（o2.12 死锁修复）
+  PASS  钩子末尾 flush 丢失（O2-ASYNC）
+  PASS  未退回 v1 的 NativeInterface.callTool 通道（已剔除注释）
+
+-- E. hook 端到端（Tools.Files 内存桩，跑真 onPromptFinalize） --
+  写入文件: boot-20261123.jsonl, events_aabbccdd.json, index.json, meta_aabbccdd.json, raw_aabbccdd.json, snapshots-20261123.jsonl
+  events 落盘: 1 条 ["ask"]，字节数 440
+  原子写: events_aabbccdd.json.tmp → events_aabbccdd.json（temp→move 命中）
+  raw/meta/index 仍按原格式落盘: PASS
+  每轮写盘: raw 1 + meta 1 + index 1 + events 1（+ boot 首轮 1 行），无额外轮询/驻留
+
+-- F. events 文件样例（fixture ask，2 问） --
+  {
+    "updatedAt": "2026-11-23 18:40:00",
+    "updatedAtMs": 1763900000000,
+    "chatId": "11223344-aaaa-bbbb-cccc-000000000000",
+    "key": "11223344",
+    "version": 1,
+    "timeSource": "capture",
+    "historyCount": 2,
+    "events": [
+      {
+        "seq": 1,
+        "time": 1763900000000,
+        "kind": "ask",
+        "name": "选哪个方案？",
+        "items": [
+          "选哪个方案？",
+          "为什么？"
+        ],
+        "count": 2,
+        "turn": 1,
+        "step": 1
+      }
+    ]
+  }
+
+问题: 无
+RESULT: PASS

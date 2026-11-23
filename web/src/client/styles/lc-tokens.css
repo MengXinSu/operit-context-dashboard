@@ -1,0 +1,103 @@
+/* Based on dsh-context (https://github.com/bowenliang123/dsh-context, Apache-2.0); modified for the Operit platform. */
+/*
+ * The shared design-token layer — one source for the chrome's rhythm, hairlines,
+ * radii, shadows, colours and focus ring. Ported from dsh-context base.css:2-30
+ * (the `--lc-*` layer), with two deliberate differences:
+ *
+ *  1. this port's dark set spells out the CURRENT dark pixels (1px lines, 7px
+ *     rhythm, no shadow) instead of leaving those keys undefined for per-rule
+ *     fallbacks; var-izing alone must not change the dark UI.
+ *  2. P4-7 adds dark-only colour corrections on top of the upstream recipe — the
+ *     canvas steps down to a near-black floor, the KPI tints keep more of their
+ *     category colour, and the "off" states stop being ghost text. The light set
+ *     keeps upstream's values verbatim. Each key below says what and why.
+ *
+ * Dark is the base set (`index.html` boots `<body data-ds-dark-theme>`); light
+ * overrides key off the host theme attribute (App.tsx flips it on <body>).
+ *
+ *   --lc-gap            rhythm inside the tab root (cards, .lc-cols)
+ *   --lc-block-gap      block rhythm at the shared chrome level (modal cards)
+ *   --lc-canvas         page/panel canvas (both themes: the sheet paints it)
+ *   --lc-kpi-*          the four tinted stat-card KPI numbers
+ *   --lc-dim            opacity of an "off"/zero data state (dimmed chips)
+ *   --lc-dim-soft       lighter dim (zero legend rows, separator slashes)
+ *   --lc-line-fine      segmented-control / chip edge
+ *   --lc-line-strong    dividers and outlined buttons
+ *   --lc-line-dashed    dashed dividers (reserved for component sheets)
+ *   --lc-line-hairline  passive hairline (tooltips, error bubbles)
+ *   --lc-line-card      card outline
+ *   --lc-card-*         card box model (radius, padding, root padding)
+ *   --lc-root-padding   the tab root's outer frame
+ *   --lc-sidebar-inset  the right-sidebar pane's 12px frame
+ *   --lc-control-track  segmented-control track fill
+ *   --lc-control-radius segmented-control corner
+ *   --lc-shadow-*       elevation (light only; dark = none)
+ *   --lc-focus-*        keyboard focus ring (U12)
+ */
+body {
+  --lc-gap: 7px;
+  --lc-block-gap: 14px;
+  /*
+   * Dark canvas: one step below bg-base (neutral-bluish-1000 #0F1115 instead of
+   * bg-base #151517). Upstream lets the host's chat canvas show through; the
+   * port has to paint it (app.css), and at bg-base the page sat only 14 RGB
+   * levels above the layer-1 cards — the ramp read as one flat mid-grey. The
+   * near-black, faintly cool floor restores the three-step ramp
+   * (15/17/21 → 35/35/36 → 44/44/46) the upstream light theme gets from
+   * bluish-75 → white.
+   */
+  --lc-canvas: var(--dsw-static-neutral-bluish-1000);
+  /*
+   * Stat-card KPI numbers. Upstream (stats.css:95-98) mixes each category
+   * colour 60/40 with label-primary; in this port's dark set label-primary is
+   * near-white, so that mix lands on pale pastels (#7DB0FD, #C789FD…). 70/30
+   * keeps the same hue/recipe but recovers chroma (+17% sRGB chroma, contrast
+   * still ≥4.79:1 on the layer-2 tiles). Light keeps the upstream 60/40, where
+   * label-primary is near-black and the mix is already saturated.
+   */
+  --lc-kpi-steps: color-mix(in srgb, var(--color-blue-500) 70%, var(--dsw-alias-label-primary));
+  --lc-kpi-turns: color-mix(in srgb, var(--color-teal-500) 70%, var(--dsw-alias-label-primary));
+  --lc-kpi-skills: color-mix(in srgb, var(--color-purple-500) 70%, var(--dsw-alias-label-primary));
+  --lc-kpi-answers: color-mix(in srgb, var(--dsw-alias-state-success-primary) 70%, var(--dsw-alias-label-primary));
+  /* Dark "off" text at upstream's 0.45 lands at 3.10:1 on a layer-2 tile (the
+     zero-value event chips and "暂无…" rows read as grey mush); 0.60 is 4.35:1. */
+  --lc-dim: 0.6;
+  --lc-dim-soft: 0.66;
+  --lc-control-track: var(--dsw-alias-bg-layer-2);
+  --lc-control-radius: 6px;
+  --lc-line-fine: 1px solid var(--dsw-alias-border-l2);
+  --lc-line-strong: 1px solid var(--dsw-alias-border-l2);
+  --lc-line-dashed: 1px dashed var(--dsw-alias-border-l2);
+  --lc-line-hairline: 1px solid var(--dsw-alias-border-l1);
+  --lc-line-card: 1px solid var(--dsw-alias-border-l2);
+  --lc-card-radius: 10px;
+  --lc-card-padding: 14px 16px;
+  --lc-root-card-padding: 7px 8px;
+  --lc-root-padding: 16px 20px 32px;
+  --lc-sidebar-inset: 12px;
+  --lc-shadow-card: none;
+  --lc-shadow-tile: none;
+  --lc-shadow-hover: none;
+  --lc-focus-color: var(--dsw-alias-brand-primary);
+  --lc-focus-ring: 2px solid var(--lc-focus-color);
+}
+body:not([data-ds-dark-theme]) {
+  --lc-gap: 9px;
+  --lc-canvas: var(--dsw-static-neutral-bluish-75);
+  /* Upstream's own mix ratios, kept verbatim for the light theme. */
+  --lc-kpi-steps: color-mix(in srgb, var(--color-blue-500) 60%, var(--dsw-alias-label-primary));
+  --lc-kpi-turns: color-mix(in srgb, var(--color-teal-500) 60%, var(--dsw-alias-label-primary));
+  --lc-kpi-skills: color-mix(in srgb, var(--color-purple-500) 60%, var(--dsw-alias-label-primary));
+  --lc-kpi-answers: color-mix(in srgb, var(--dsw-alias-state-success-primary) 60%, var(--dsw-alias-label-primary));
+  --lc-dim: 0.45;
+  --lc-dim-soft: 0.55;
+  --lc-control-track: var(--dsw-static-neutral-bluish-75);
+  --lc-line-fine: 0.5px solid var(--dsw-alias-border-l3);
+  --lc-line-strong: 0.5px solid var(--dsw-alias-border-l4);
+  --lc-line-dashed: 0.5px dashed var(--dsw-alias-border-l3);
+  --lc-card-radius: 12px;
+  --lc-root-card-padding: 8px 9px;
+  --lc-shadow-card: var(--dsw-shadow-lv1, 0 1px 2px rgba(0, 0, 0, 0.05)), var(--dsw-shadow-lv1-blur, 0 10px 24px -8px rgba(0, 0, 0, 0.12));
+  --lc-shadow-tile: var(--dsw-shadow-lv1, 0 1px 2px rgba(0, 0, 0, 0.05));
+  --lc-shadow-hover: var(--dsw-shadow-lv2, 0 6px 16px -4px rgba(0, 0, 0, 0.14));
+}

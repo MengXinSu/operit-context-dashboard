@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MilestoneBand 静态演示</title>
+<link rel="stylesheet" href="src/client/styles/design-platform.css">
+<link rel="stylesheet" href="src/client/styles/base.css">
+<link rel="stylesheet" href="src/client/styles/scrollbar.css">
+<link rel="stylesheet" href="src/client/styles/milestoneBand.css">
+<style>
+  /* 演示页自用 chrome；组件样式全部来自上面的 milestoneBand.css。 */
+  body {
+    /* tailwind.css 的 @theme 块在浏览器里不生效，这里补上组件用到的 7 个 --color-* token（值照抄 tailwind.css）。 */
+    --color-orange-500: oklch(70.5% 0.213 47.604);
+    --color-teal-500: oklch(70.4% 0.14 182.503);
+    --color-blue-500: oklch(62.3% 0.214 259.815);
+    --color-indigo-500: oklch(58.5% 0.233 277.117);
+    --color-violet-500: oklch(60.6% 0.25 292.717);
+    --color-purple-500: oklch(62.7% 0.265 303.9);
+    --color-pink-500: oklch(65.6% 0.241 354.308);
+    margin: 0;
+    background: var(--dsw-alias-bg-base);
+    color: var(--dsw-alias-label-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .demo { box-sizing: border-box; max-width: 980px; margin: 0 auto; padding: 14px 12px 40px; }
+  .demo-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .demo-head h1 { font-size: 16px; margin: 0; }
+  .demo-head button { margin-left: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: inherit; font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer; }
+  .demo-note { margin: 0 0 14px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.7; }
+  .demo-head .demo-note { margin: 0; }
+  .demo-card { box-sizing: border-box; padding: 7px 8px; margin-bottom: 12px; }
+  .demo-card .lc-card-title { margin-bottom: 2px; }
+  .demo-mobile { width: 390px; max-width: 100%; box-sizing: border-box; margin: 0 0 12px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 10px; padding: 6px; }
+  .demo-mobile-label { font-size: 11px; color: var(--dsw-alias-label-secondary); padding: 0 2px 6px; }
+  .demo-empty { min-height: 24px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 6px; color: var(--dsw-alias-label-secondary); font-size: 11.5px; line-height: 22px; padding: 0 8px; }
+  .demo-report { margin: 16px 0 0; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font: 12px/1.65 ui-monospace, Consolas, "Courier New", monospace; white-space: pre-wrap; word-break: break-word; }
+  .demo-report.ok { border-color: var(--dsw-alias-state-success-primary); }
+  .demo-report.bad { border-color: var(--dsw-alias-state-error-primary); }
+  .demo-report b { font-weight: 700; }
+</style>
+</head>
+<body>
+<main class="demo">
+  <div class="demo-head">
+    <h1>MilestoneBand 静态演示</h1>
+    <span class="demo-note">纯 HTML + 内联脚本 · 假数据 · 与组件同一套 DOM 与 CSS</span>
+    <button type="button" id="theme-btn">切换深浅色</button>
+  </div>
+  <p class="demo-note">覆盖：多种 kind 的颜色与图标、同一 seq 多 flag 横排、计数徽章（仅计数 &gt; 1 时出现，上游同款）、未知 kind 中性色兜底、空数据返回 null、390px 下横向滚动而不撑开页面。</p>
+
+  <section class="lc-card demo-card">
+    <div class="lc-card-title"><span class="lc-card-title-text">典型数据 · 3 个 seq 组 / 7 个 flag</span></div>
+    <div id="band-typical"></div>
+  </section>
+
+  <div class="demo-mobile" id="mobile-frame">
+    <div class="demo-mobile-label">390px 模拟（手机上卡片内宽更窄）· 16 个 seq 组</div>
+    <section class="lc-card demo-card">
+      <div class="lc-card-title"><span class="lc-card-title-text">超出宽度：旗标带自己横向滚动</span></div>
+      <div id="band-wide"></div>
+    </section>
+  </div>
+
+  <section class="lc-card demo-card">
+    <div class="lc-card-title"><span class="lc-card-title-text">未知 kind · 中性色兜底</span></div>
+    <div id="band-unknown"></div>
+  </section>
+
+  <section class="lc-card demo-card">
+    <div class="lc-card-title"><span class="lc-card-title-text">空数据 · 组件返回 null</span></div>
+    <div id="band-empty"></div>
+    <div class="demo-empty" id="empty-note">上面的容器里没有 .lc-milestones-band（空数据不占位）。</div>
+  </section>
+
+  <pre id="report" class="demo-report">正在运行断言…</pre>
+</main>
+
+<script>
+(function () {
+  'use strict'
+
+  // 颜色与优先级照抄 src/client/components/milestoneBand.tsx / 上游 milestoneIcons.tsx。
+  var COLORS = {
+    compaction: 'var(--dsw-alias-state-error-primary)',
+    prune: 'var(--color-violet-500)',
+    skill: 'var(--color-orange-500)',
+    agent: 'var(--color-purple-500)',
+    spawn: 'var(--dsw-alias-state-success-primary)',
+    model: 'var(--dsw-alias-label-secondary)',
+    longest: 'var(--color-blue-500)',
+    growth: 'var(--color-teal-500)',
+    'goal-create': 'var(--color-blue-500)',
+    'goal-complete': 'var(--dsw-alias-state-success-primary)',
+    'todo-add': 'var(--color-indigo-500)',
+    'todo-done': 'var(--color-teal-500)',
+    ask: 'var(--dsw-alias-state-warn-primary)',
+    'team-task-create': 'var(--color-pink-500)',
+    'team-task-complete': 'var(--color-violet-500)'
+  }
+  var PRIORITY = {
+    compaction: 0, prune: 1, 'goal-complete': 2, 'team-task-complete': 3, 'todo-done': 4,
+    'goal-create': 5, 'team-task-create': 6, 'todo-add': 7, ask: 8, longest: 9,
+    growth: 10, spawn: 11, agent: 12, skill: 13, model: 14
+  }
+  var FALLBACK = 'var(--dsw-alias-label-secondary)'
+  var GLYPHS = {
+    'todo-add': '<path d="M1.8 2.2h4.4M1.8 5h3M1.8 7.8h3"></path><path d="M7.2 5.4v3.2M5.6 7h3.2"></path>',
+    'todo-done': '<path d="M1.8 2.2h4.4M1.8 5h3M1.8 7.8h2.2"></path><path d="M5.8 7l1.2 1.2 2-2.2"></path>',
+    ask: '<path d="M1.8 2h6.4v4H5.2L3.1 7.8V6H1.8z"></path><path d="M4 3.3c.1-.5.5-.8 1-.8.6 0 1 .4 1 .9 0 .7-.9.8-.9 1.4"></path><circle cx="5.1" cy="5.2" r=".25" fill="currentColor" stroke="none"></circle>',
+    'goal-create': '<circle cx="5" cy="5" r="3.2"></circle><circle cx="5" cy="5" r="1.2"></circle><path d="M5 1.8V.6M8.2 5h1.2"></path>',
+    'goal-complete': '<path d="M2.2 8.6V1.4M2.2 1.8h5.4L6.6 3.6l1 1.8H2.2"></path><path d="M6.2 7.1l1 1 1.8-1.8"></path>',
+    'team-task-create': '<rect x="2.8" y="1.8" width="4.4" height="6.4" rx=".5"></rect><path d="M4 1.8V1h2v.8"></path><path d="M5 4v2.2M3.9 5.1h2.2"></path>',
+    'team-task-complete': '<rect x="2.8" y="1.8" width="4.4" height="6.4" rx=".5"></rect><path d="M4 1.8V1h2v.8"></path><path d="M4.1 5l.8.8 1.5-1.5"></path>',
+    agent: '<path d="M1.8 2.2h6.4v4.1H5.1L3 8.1V6.3H1.8z"></path><circle cx="3.6" cy="4.3" r=".35" fill="currentColor" stroke="none"></circle><circle cx="6.4" cy="4.3" r=".35" fill="currentColor" stroke="none"></circle>',
+    skill: '<path d="M5 1.2l.9 2.6 2.6.9-2.6.9L5 8.8 4.1 5.6 1.5 4.7l2.6-.9z"></path>'
+  }
+  var FALLBACK_GLYPH = '<circle cx="5" cy="5" r="1.5"></circle>'
+
+  var TYPICAL = [
+    { seq: 3, time: 0, kind: 'todo-add', count: 3, turn: 1, step: 2 },
+    { seq: 3, time: 0, kind: 'ask', name: '要不要合并设置卡？', count: 2, items: ['要不要合并设置卡？', '暗色主题入口放哪？'], turn: 1, step: 3 },
+    { seq: 7, time: 0, kind: 'todo-done', name: '修登录重试', count: 5, items: ['修登录重试', '补 390px 溢出用例', '组件抽离', '样式变量', '构建验证'], turn: 2, step: 1 },
+    { seq: 7, time: 0, kind: 'goal-create', name: '把里程碑带做出来', count: 1, turn: 2, step: 1 },
+    { seq: 7, time: 0, kind: 'skill', name: 'office-xlsx', count: 1, turn: 2, step: 2 },
+    { seq: 12, time: 0, kind: 'goal-complete', name: '完成里程碑带', count: 1, turn: 3, step: 4 },
+    { seq: 12, time: 0, kind: 'team-task-complete', name: 'P3-3 里程碑带组件', count: 1, turn: 3, step: 4 }
+  ]
+
+  var WIDE = []
+  var WIDE_KINDS = ['todo-add', 'todo-done', 'goal-create', 'goal-complete', 'ask', 'team-task-create', 'team-task-complete', 'agent', 'skill']
+  for (var wi = 0; wi < 16; wi++) {
+    WIDE.push({
+      seq: 30 + wi,
+      time: 0,
+      kind: WIDE_KINDS[wi % WIDE_KINDS.length],
+      name: '事件 ' + (wi + 1),
+      count: wi % 3 === 0 ? wi + 2 : 1,
+      turn: 10 + wi,
+      step: 1
+    })
+  }
+
+  var UNKNOWN = [
+    { seq: 20, time: 0, kind: 'telemetry', name: '未知事件', count: 2 },
+    { seq: 20, time: 0, kind: 'agent', name: 'reviewer', detail: '审查组件', count: 1 },
+    { seq: 21, time: 0, kind: 'warp-drive', name: '另一个未知', count: 1 }
+  ]
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  }
+  function colorOf(kind) { return COLORS[kind] || FALLBACK }
+  function priorityOf(kind) { return PRIORITY[kind] === undefined ? 99 : PRIORITY[kind] }
+  function countOf(ev) {
+    if (typeof ev.count === 'number' && ev.count > 0) return ev.count
+    if (Array.isArray(ev.items) && ev.items.length > 0) return ev.items.length
+    return 1
+  }
+  function tipOf(entry) {
+    var items = entry.items.slice(0, 3)
+    var parts = [entry.kind]
+    if (entry.name && entry.name !== items[0]) parts.push(entry.name)
+    if (items.length > 0) parts.push(items.join('、') + (entry.count > items.length ? '…' : ''))
+    else if (entry.count > 1) parts.push('×' + entry.count)
+    return parts.join(' · ')
+  }
+  function groupsOf(events) {
+    var bySeq = new Map()
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i]
+      if (!ev || typeof ev.seq !== 'number' || typeof ev.kind !== 'string' || ev.kind === '') continue
+      var byKind = bySeq.get(ev.seq)
+      if (!byKind) { byKind = new Map(); bySeq.set(ev.seq, byKind) }
+      var list = byKind.get(ev.kind)
+      if (list) list.push(ev)
+      else byKind.set(ev.kind, [ev])
+    }
+    var groups = []
+    bySeq.forEach(function (byKind, seq) {
+      var entries = []
+      byKind.forEach(function (list, kind) {
+        var count = 0
+        var items = []
+        var name = ''
+        for (var j = 0; j < list.length; j++) {
+          count += countOf(list[j])
+          if (!name && typeof list[j].name === 'string' && list[j].name) name = list[j].name
+          if (Array.isArray(list[j].items)) items = items.concat(list[j].items)
+        }
+        entries.push({ kind: kind, count: count, items: items, name: name })
+      })
+      entries.sort(function (a, b) {
+        var d = priorityOf(a.kind) - priorityOf(b.kind)
+        return d !== 0 ? d : (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0)
+      })
+      groups.push({ seq: seq, entries: entries })
+    })
+    groups.sort(function (a, b) { return a.seq - b.seq })
+    return groups
+  }
+  function iconOf(kind) {
+    return '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (GLYPHS[kind] || FALLBACK_GLYPH) + '</svg>'
+  }
+  function renderBand(events, activeSeq, label) {
+    var groups = groupsOf(events)
+    if (groups.length === 0) return ''
+    var out = '<div class="lc-milestones-band" role="group" aria-label="' + esc(label) + '"><div class="lc-ms-track">'
+    for (var i = 0; i < groups.length; i++) {
+      var group = groups[i]
+      var active = activeSeq === group.seq
+      var tips = group.entries.map(tipOf)
+      out += '<button type="button" class="lc-ms' + (active ? ' lc-ms-active' : '') + '" style="--lc-ms-c:' + colorOf(group.entries[0].kind) + '" data-seq="' + group.seq + '" aria-pressed="' + (active ? 'true' : 'false') + '" aria-label="' + esc(tips.join('；')) + '">'
+      out += '<span class="lc-ms-flags">'
+      for (var j = 0; j < group.entries.length; j++) {
+        var entry = group.entries[j]
+        out += '<span class="lc-ms-flag" data-kind="' + esc(entry.kind) + '" title="' + esc(tipOf(entry)) + '" style="--lc-ms-c:' + colorOf(entry.kind) + '">'
+        out += iconOf(entry.kind)
+        if (entry.count > 1) out += '<span class="lc-ms-count">' + entry.count + '</span>'
+        out += '</span>'
+      }
+      out += '</span><span class="lc-ms-pole" aria-hidden="true"></span><span class="lc-ms-foot" aria-hidden="true"></span></button>'
+    }
+    return out + '</div></div>'
+  }
+
+  var state = { activeSeq: null }
+
+  function paint() {
+    document.getElementById('band-typical').innerHTML = renderBand(TYPICAL, state.activeSeq, '典型里程碑')
+    document.getElementById('band-wide').innerHTML = renderBand(WIDE, state.activeSeq, '横向滚动里程碑')
+    document.getElementById('band-unknown').innerHTML = renderBand(UNKNOWN, state.activeSeq, '未知 kind 里程碑')
+    document.getElementById('band-empty').innerHTML = renderBand([], state.activeSeq, '空数据')
+  }
+
+  function init() {
+    paint()
+    document.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.lc-ms') : null
+      if (!btn) return
+      var seq = Number(btn.getAttribute('data-seq'))
+      if (!isFinite(seq)) return
+      state.activeSeq = state.activeSeq === seq ? null : seq
+      paint()
+    })
+    var themeBtn = document.getElementById('theme-btn')
+    if (themeBtn) {
+      themeBtn.addEventListener('click', function () {
+        if (document.body.hasAttribute('data-ds-dark-theme')) document.body.removeAttribute('data-ds-dark-theme')
+        else document.body.setAttribute('data-ds-dark-theme', '')
+      })
+    }
+    runChecks()
+  }
+
+  function runChecks() {
+    var results = []
+    function ok(name, cond, detail) { results.push({ ok: !!cond, name: name, detail: detail || '' }) }
+    function q(sel, root) { return (root || document).querySelector(sel) }
+    function qa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)) }
+    try {
+      var band = q('#band-typical .lc-milestones-band')
+      var groups = qa('#band-typical .lc-ms')
+      var flags = qa('#band-typical .lc-ms-flag')
+      var kinds = {}
+      for (var fi = 0; fi < flags.length; fi++) kinds[flags[fi].getAttribute('data-kind')] = 1
+      var seq7 = q('#band-typical .lc-ms[data-seq="7"]')
+      var doneFlag = q('#band-typical .lc-ms-flag[data-kind="todo-done"]')
+      var goalFlag = q('#band-typical .lc-ms-flag[data-kind="goal-create"]')
+      var unknownFlag = q('#band-unknown .lc-ms-flag[data-kind="telemetry"]')
+      var countEl = q('#band-typical .lc-ms-count')
+      var pole = q('#band-typical .lc-ms-pole')
+      var foot = q('#band-typical .lc-ms-foot')
+
+      ok('根节点带 role=group 与 bandLabel', !!band && band.getAttribute('role') === 'group' && band.getAttribute('aria-label') === '典型里程碑')
+      ok('典型数据按 seq 分成 3 组', groups.length === 3, '实际 ' + groups.length)
+      ok('典型数据共 7 个 flag', flags.length === 7, '实际 ' + flags.length)
+      ok('seq 7 同组 3 个 flag 横排', seq7 ? qa('.lc-ms-flag', seq7).length === 3 : false)
+      ok('至少 3 种 kind', Object.keys(kinds).length >= 3, Object.keys(kinds).join(','))
+      ok('todo-done 徽章计数 5', doneFlag && doneFlag.textContent.indexOf('5') >= 0, doneFlag ? doneFlag.textContent : '')
+      ok('计数 1 的 flag 不亮徽章', goalFlag && !q('.lc-ms-count', goalFlag))
+      ok('todo-done title 含 kind/name/前 3 项', doneFlag && doneFlag.getAttribute('title') === 'todo-done · 修登录重试、补 390px 溢出用例、组件抽离…', doneFlag ? doneFlag.getAttribute('title') : '')
+      ok('空数据容器无任何子节点', document.getElementById('band-empty').childElementCount === 0)
+      ok('未知 kind 用中性色 token', unknownFlag && unknownFlag.getAttribute('style').indexOf('--lc-ms-c:' + FALLBACK) >= 0, unknownFlag ? unknownFlag.getAttribute('style') : '')
+      ok('flag 实测 12×12（CSS 已加载）', q('#band-typical .lc-ms-flag') && getComputedStyle(q('#band-typical .lc-ms-flag')).width === '12px' && getComputedStyle(q('#band-typical .lc-ms-flag')).height === '12px')
+      ok('计数徽章实测 8px 高', countEl && getComputedStyle(countEl).height === '8px')
+      ok('虚线 pole / 菱形 foot 生效', pole && foot && getComputedStyle(pole).backgroundImage.indexOf('repeating-linear-gradient') >= 0 && getComputedStyle(foot).transform !== 'none')
+      ok('未知 kind 的计算色 = label-secondary', unknownFlag && countEl && getComputedStyle(unknownFlag).color === getComputedStyle(countEl).color, unknownFlag && countEl ? getComputedStyle(unknownFlag).color + ' vs ' + getComputedStyle(countEl).color : '')
+      var pageOverflow = document.documentElement.scrollWidth <= window.innerWidth + 1
+      ok('页面无横向滚动（innerWidth=' + window.innerWidth + ', scrollWidth=' + document.documentElement.scrollWidth + '）', pageOverflow)
+      var frame = document.getElementById('mobile-frame')
+      var frameFits = frame && frame.scrollWidth <= frame.clientWidth + 1
+      ok('390px 模拟容器不被内容撑开', frameFits, frame ? 'frame ' + frame.clientWidth + ' / scroll ' + frame.scrollWidth : '')
+      var wide = document.getElementById('band-wide')
+      var wideScrolls = wide && wide.scrollWidth > wide.clientWidth
+      ok('超宽时 band 内部横向滚动', wideScrolls, wide ? 'client ' + wide.clientWidth + ' / scroll ' + wide.scrollWidth : '')
+      ok('band 的 overflow-x 为 auto', wide && getComputedStyle(wide).overflowX === 'auto', wide ? getComputedStyle(wide).overflowX : '')
+      var allGroups = qa('.lc-ms')
+      ok('每组都有 pole 与 foot', qa('.lc-ms-pole').length === allGroups.length && qa('.lc-ms-foot').length === allGroups.length)
+      if (seq7) seq7.click()
+      var seq7After = q('#band-typical .lc-ms[data-seq="7"]')
+      ok('点击后 activeSeq 标记为 seq 7', seq7After && seq7After.classList.contains('lc-ms-active') && seq7After.getAttribute('aria-pressed') === 'true')
+    } catch (err) {
+      ok('断言脚本无异常', false, String(err && err.stack ? err.stack : err))
+    }
+
+    var pass = 0
+    var lines = []
+    for (var r = 0; r < results.length; r++) {
+      if (results[r].ok) pass++
+      lines.push((results[r].ok ? '✓ ' : '✗ ') + results[r].name + (results[r].detail ? '  [' + results[r].detail + ']' : ''))
+    }
+    var all = pass === results.length
+    var head = (all ? '全部通过' : '有失败') + ' · ' + pass + '/' + results.length + ' · viewport ' + window.innerWidth + 'px'
+    var report = document.getElementById('report')
+    report.textContent = head + '\n' + lines.join('\n')
+    report.className = 'demo-report ' + (all ? 'ok' : 'bad')
+    document.title = (all ? 'PASS ' : 'FAIL ') + pass + '/' + results.length + ' · MilestoneBand 静态演示'
+  }
+
+  // Node 侧验证可复用：无 DOM 时只暴露纯函数。
+  globalThis.MilestoneDemo = { TYPICAL: TYPICAL, WIDE: WIDE, UNKNOWN: UNKNOWN, groupsOf: groupsOf, renderBand: renderBand, tipOf: tipOf, countOf: countOf }
+  if (typeof document !== 'undefined' && document.getElementById('band-typical')) init()
+})()
+</script>
+</body>
+</html>

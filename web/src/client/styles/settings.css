@@ -1,0 +1,16 @@
+/* 设置卡（W4）：折叠头 + 偏好行。
+   基于 dsh-context（https://github.com/bowenliang123/dsh-context, Apache-2.0）settings.css 改写：
+   偏好选择改为页面统一的 chips（.lc-gran 体系）而非上游下拉菜单；尺寸走本页紧凑字号。 */
+.lc-settings-head { width: 100%; appearance: none; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0; }
+.lc-settings-headtext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lc-settings-name { font-size: 12.5px; font-weight: 600; line-height: 1.4; color: var(--dsw-alias-label-primary); }
+.lc-settings-desc { font-size: 10.5px; line-height: 1.4; color: var(--dsw-alias-label-tertiary); }
+.lc-settings-body { border-top: 1px solid var(--dsw-alias-border-l1); margin-top: 8px; padding-top: 3px; }
+.lc-settings-row { display: flex; align-items: center; gap: 8px; row-gap: 2px; padding: 5px 0; flex-wrap: wrap; }
+.lc-settings-label { flex: none; font-size: 12px; white-space: nowrap; color: var(--dsw-alias-label-primary); }
+/* 窄卡折行：标签与 chips 组同排放不下时整组落到下一行，组内按钮再按需折行——
+   390px 手机宽度下卡片内容区约 332px，只要组宽不超过卡宽就不会横向溢出。 */
+.lc-settings-row .lc-gran { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+@container lc-card (max-width: 300px) {
+  .lc-settings-row .lc-settings-label { flex: 1 1 100%; }
+}

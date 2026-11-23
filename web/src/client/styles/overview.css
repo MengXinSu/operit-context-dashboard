@@ -1,0 +1,220 @@
+/* Based on dsh-context (https://github.com/bowenliang123/dsh-context, Apache-2.0); modified for the Operit platform. */
+/*
+ * 洞察视图（跨会话总览）的样式表 —— 结构照抄上游 dsh-context：
+ *   overview.css 的 .lc-ov-* / .lc-heat-*（KPI 栅格、7 天双柱、8 周热力图、会话卡）
+ * 本文件只在 Operit 侧做三处适配，其余数值与上游一致：
+ *   ① 页面不是独立滚动容器（本插件的 .lc-root 统一滚），所以 .lc-ov-page 只做 container
+ *      查询锚点，不设 height/overflow；
+ *   ② 双列断点按用户要求钉死 900px（上游是 933/932 两档，这里合并）；
+ *   ③ 热力图外面加一层 .lc-heat-scroll：极窄时横向滚动，格子永不撑破卡片。
+ * 颜色一律走 --lc-* token 与 --dsw-alias-*，不写死色值（配色最后统一调）。
+ */
+
+/* ── 顶部视图切换（当前会话 / 洞察）── */
+.lc-ov-switch { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lc-ov-tabs {
+  display: inline-flex; gap: 2px; padding: 1px;
+  background: var(--lc-control-track, var(--dsw-alias-bg-layer-2));
+  border: var(--lc-line-fine, 1px solid var(--dsw-alias-border-l2));
+  border-radius: var(--lc-control-radius, 6px);
+}
+.lc-ov-theme { margin-left: auto; }
+
+/* ── 容器与头部 ── */
+.lc-ov-page { container: lc-ov / inline-size; min-width: 0; }
+.lc-ov-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: var(--lc-gap, 7px); }
+.lc-ov-title { flex: none; font-size: 15px; font-weight: 600; }
+.lc-ov-sub { min-width: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.lc-ov-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lc-ov-tools .lc-gran { margin-left: 0; }
+.lc-ov-refresh { white-space: nowrap; }
+.lc-ov-ms, .lc-ov-count { font-size: 10px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lc-ov-count { background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 1px 6px; }
+.lc-ov-badge {
+  flex: none; font-size: 10px; line-height: 1.5; white-space: nowrap;
+  color: var(--dsw-alias-label-secondary); border: var(--lc-line-fine, 1px solid var(--dsw-alias-border-l2));
+  border-radius: 4px; padding: 0 4px;
+}
+.lc-ov-badge-on { color: var(--dsw-alias-brand-primary); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); }
+.lc-ov-note { font-size: 10.5px; line-height: 1.55; color: var(--dsw-alias-label-secondary); }
+.lc-ov-empty-hint { margin-top: 6px; font-size: 11px; line-height: 1.6; opacity: 0.85; }
+
+/* ── 两列骨架：手机单列，宽屏（视口 ≥900px，去掉 .lc-root 左右各 20px 内边距后容器约 860px）两列：
+      左 = KPI + 双柱 + 热力图，右 = 会话卡 ── */
+.lc-ov-cols { display: flex; flex-direction: column; gap: var(--lc-gap, 7px); min-width: 0; }
+.lc-ov-main, .lc-ov-side { display: flex; flex-direction: column; gap: var(--lc-gap, 7px); min-width: 0; }
+.lc-ov-main > .lc-card, .lc-ov-side > .lc-card { margin-bottom: 0; }
+@container lc-ov (min-width: 860px) {
+  .lc-ov-cols { flex-direction: row; align-items: flex-start; }
+  .lc-ov-main { flex: 1 1 auto; }
+  .lc-ov-side { flex: 0 1 40%; max-width: 430px; }
+}
+
+/* ── KPI 栏（三列，窄屏两列；与上游 .lc-ov-kpis/.lc-ov-kpi 同构） ── */
+.lc-ov-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--lc-gap, 7px); }
+.lc-ov-kpi { align-items: center; text-align: center; padding: 6px 8px; }
+.lc-ov-kpi .lc-stat-value { font-size: 18px; }
+.lc-ov-kpi .lc-stat-label, .lc-ov-kpi .lc-stat-sub { white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.35; }
+@container lc-ov (max-width: 640px) {
+  .lc-ov-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lc-ov-kpi .lc-stat-value { font-size: 16px; }
+}
+
+/* ── 7 天双柱（左轴 tokens / 右轴成本；端口自上游 overview.css:41-71） ── */
+.lc-ov-usage { display: flex; flex-direction: column; min-width: 0; }
+.lc-ov-usage-plot {
+  --lc-ov-usage-axis-top-inset: 14px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
+  grid-template-rows: 108px auto;
+  gap: 6px;
+}
+.lc-ov-usage-grid { grid-area: 1 / 2; position: relative; min-width: 0; display: flex; padding-top: var(--lc-ov-usage-axis-top-inset); }
+.lc-ov-usage-rail-l { grid-area: 1 / 1; }
+.lc-ov-usage-rail-r { grid-area: 1 / 3; }
+.lc-ov-usage-rail {
+  position: relative; width: 42px; margin-top: var(--lc-ov-usage-axis-top-inset);
+  font-size: 10px; line-height: 1.2; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums;
+}
+.lc-ov-usage-rail-l .lc-ov-usage-tick { right: 0; }
+.lc-ov-usage-rail-r .lc-ov-usage-tick { left: 0; }
+.lc-ov-usage-tick { position: absolute; transform: translateY(-50%); white-space: nowrap; }
+.lc-ov-usage-line { position: absolute; left: 0; right: 0; height: 1px; background: color-mix(in srgb, var(--dsw-alias-border-l2) 70%, transparent); }
+.lc-ov-usage-line-0 { background: var(--dsw-alias-border-l2); }
+.lc-ov-usage-cols { position: relative; flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; gap: 6px; }
+.lc-ov-usage-col {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+  border: 0; border-radius: 4px; padding: 0; background: transparent; color: inherit; font: inherit;
+  cursor: pointer; transition: background-color var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease-in-out);
+}
+.lc-ov-usage-col:hover { background: color-mix(in srgb, var(--dsw-alias-label-secondary) 10%, transparent); }
+.lc-ov-usage-col-on, .lc-ov-usage-col-on:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
+.lc-ov-usage-bars { flex: 1 1 auto; width: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 3px; }
+.lc-ov-usage-bar { position: relative; flex: none; width: 10px; max-width: 42%; border-radius: 3px 3px 0 0; }
+.lc-ov-usage-value {
+  position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%);
+  font-size: 10px; line-height: 1.2; color: var(--dsw-alias-label-secondary); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.lc-ov-usage-tokens { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 72%, transparent); }
+.lc-ov-usage-cost { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, var(--dsw-alias-brand-primary)) 72%, transparent); }
+.lc-ov-usage-days { grid-area: 2 / 2; display: flex; gap: 6px; }
+.lc-ov-usage-day {
+  flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px; line-height: 1.2;
+  color: var(--dsw-alias-label-secondary); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.lc-ov-usage-day-on { color: var(--dsw-alias-label-primary); font-weight: 600; }
+.lc-ov-usage-key { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 5px; padding-top: 5px; }
+.lc-ov-usage-swatch { flex: none; width: 10px; height: 8px; border-radius: 2px; }
+.lc-ov-usage-swatch-off { opacity: 0.25; }
+.lc-ov-usage-key-label { font-size: 10px; color: var(--dsw-alias-label-secondary); }
+.lc-ov-day-chip {
+  border: var(--lc-line-fine, 1px solid var(--dsw-alias-border-l2)); border-radius: 999px;
+  background: transparent; color: var(--dsw-alias-label-primary);
+  font: inherit; font-size: 10px; line-height: 1.5; padding: 0 8px; cursor: pointer; white-space: nowrap;
+}
+.lc-ov-day-chip:hover { background: var(--dsw-alias-interactive-bg-hover); }
+/* 窄卡片下的降级（照上游 overview.css:63-68 的两档）：柱顶数值先隐藏，再隔一天隐藏日期。
+   -359px 这一档在 390px 手机上就会命中（卡片内宽 ≈334px），否则 10px 的数值会左右压到相邻柱。 */
+@container lc-card (max-width: 359px) {
+  .lc-ov-usage-plot { grid-template-columns: 30px minmax(0, 1fr) 30px; }
+  .lc-ov-usage-rail { width: 30px; }
+  .lc-ov-usage-value { visibility: hidden; }
+}
+@container lc-card (max-width: 319px) {
+  .lc-ov-usage-day:nth-child(even) { visibility: hidden; }
+}
+
+/* ── 8 周热力图（端口自上游 overview.css:91-119 + heatmap.tsx 的 DOM） ── */
+.lc-ov-heat-card { display: flex; flex-direction: column; min-width: 0; }
+.lc-ov-heat-note { margin-bottom: 6px; }
+.lc-heat-wrap { display: flex; flex-direction: column; min-width: 0; }
+.lc-heat-scroll { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; overscroll-behavior-x: contain; }
+.lc-heat { display: flex; gap: 8px; align-items: center; min-width: max-content; margin: 0 auto; }
+.lc-heat-wds, .lc-heat-col { padding-top: 18px; }
+.lc-heat-wds { display: flex; flex-direction: column; gap: 3px; }
+.lc-heat-wd { flex: none; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.lc-heat-cols { display: flex; gap: 3px; }
+.lc-heat-col { position: relative; display: flex; flex-direction: column; gap: 3px; }
+.lc-heat-mon { position: absolute; top: 0; left: 0; font-size: 10px; line-height: 18px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.lc-heat-cell {
+  width: 20px; height: 20px; box-sizing: border-box; border: 0; border-radius: 20%; padding: 0;
+  background: var(--dsw-alias-bg-layer-2); color: inherit; font: inherit; cursor: default;
+}
+button.lc-heat-cell { cursor: pointer; }
+button.lc-heat-cell:hover { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--dsw-alias-brand-primary) 70%, transparent); }
+.lc-heat-future { background: transparent; }
+.lc-heat-0 { background: color-mix(in srgb, var(--dsw-alias-label-secondary) 16%, transparent); }
+.lc-heat-1 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent); }
+.lc-heat-2 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 50%, transparent); }
+.lc-heat-3 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 72%, transparent); }
+.lc-heat-4 { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 92%, transparent); }
+.lc-heat-on { box-shadow: 0 0 0 1.5px var(--dsw-alias-brand-primary); }
+.lc-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 2px; padding-top: 6px; }
+.lc-heat-legend .lc-heat-cell { width: 10px; height: 10px; }
+.lc-heat-key { font-size: 10px; color: var(--dsw-alias-label-secondary); margin: 0 2px; }
+@container lc-card (max-width: 380px) {
+  .lc-heat-cell { width: 16px; height: 16px; }
+  .lc-heat-wd { height: 16px; }
+  .lc-heat { gap: 6px; }
+}
+
+/* ── 会话卡列表 ── */
+.lc-ov-list { min-width: 0; }
+.lc-ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; }
+.lc-ov-session {
+  display: flex; flex-direction: column; gap: 5px; min-width: 0;
+  text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: var(--dsw-alias-bg-layer-1); border: var(--lc-line-fine, 1px solid var(--dsw-alias-border-l2));
+  border-radius: 8px; padding: 7px 8px;
+  transition: background-color var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease-in-out),
+    border-color var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease-in-out);
+}
+.lc-ov-session:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.lc-ov-session-off { opacity: 0.5; }
+.lc-ov-session-on { border-color: var(--dsw-alias-brand-primary); }
+.lc-ov-session-head { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.lc-ov-session-title {
+  flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; line-height: 1.45;
+  overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere;
+}
+.lc-ov-session-times { flex: none; display: flex; flex-direction: column; align-items: flex-end; }
+.lc-ov-session-time { font-size: 10px; color: var(--dsw-alias-label-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lc-ov-session-crumb { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
+.lc-ov-crumb-key {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px; line-height: 1.6; color: var(--dsw-alias-label-secondary);
+  background: color-mix(in srgb, var(--dsw-alias-label-secondary) 14%, transparent); border-radius: 999px; padding: 0 7px;
+}
+.lc-ov-mini-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 10px; min-width: 0; }
+.lc-ov-mini-stat { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 10.5px; min-width: 0; }
+.lc-ov-mini-label { flex: none; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.lc-ov-mini-value { min-width: 0; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lc-ov-session-detail {
+  display: flex; flex-direction: column; gap: 2px; margin-top: 2px; padding-top: 5px;
+  border-top: var(--lc-line-fine, 1px solid var(--dsw-alias-border-l2));
+  font-size: 10.5px; min-width: 0;
+}
+.lc-ov-detail-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.lc-ov-detail-row > span { flex: none; color: var(--dsw-alias-label-secondary); }
+.lc-ov-detail-row > b {
+  min-width: 0; font-weight: 600; font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── 覆盖状态脚注 ── */
+.lc-ov-coverage { margin-bottom: 0; }
+.lc-ov-cov-rows { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 10.5px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+
+/* ── 键盘焦点（触控/键盘都要看得见） ── */
+.lc-ov-usage-col:focus-visible,
+.lc-ov-session:focus-visible,
+.lc-heat-cell:focus-visible,
+.lc-ov-day-chip:focus-visible {
+  outline: var(--lc-focus-ring, 2px solid var(--dsw-alias-brand-primary));
+  outline-offset: 1px;
+}
+@media (pointer: coarse) {
+  .lc-ov-session { padding: 9px 9px; }
+  .lc-heat-cell { min-width: 20px; min-height: 20px; }
+}
